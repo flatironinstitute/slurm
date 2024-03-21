@@ -409,6 +409,7 @@ AC_CONFIG_FILES([Makefile
 		 src/plugins/acct_gather_profile/hdf5/Makefile
 		 src/plugins/acct_gather_profile/hdf5/sh5util/Makefile
 		 src/plugins/acct_gather_profile/influxdb/Makefile
+		 src/plugins/acct_gather_profile/exporter/Makefile
 		 src/plugins/auth/Makefile
 		 src/plugins/auth/jwt/Makefile
 		 src/plugins/auth/munge/Makefile

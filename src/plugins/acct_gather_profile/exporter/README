@@ -1,0 +1,25 @@
+This profiling plugin simply writes the current profile values to files in the
+configured ProfileExporterDir directory.  It does not keep any history.  It is
+intended for use with the accompanying export-profile-prometheus.py exporter
+script, which exposes these values to prometheus on a separate web server.  It
+could also theoretically be used by other exporters.
+
+The plugin has two parameters in acct_gather.conf:
+  ProfileExporterDir: directory to export values to.  The recommended values in
+    /run/slurm/profile or other ramdisk location.  For each running job step,
+    the following directory structure will be created here:
+      JOBID.STEP/
+        alloc: file with static step allocation info, example:
+          time STARTTIME
+          node NODENAME
+          user USERNAME
+          tasks NTASKS
+          cpus NCORES
+          cpus_per_task NCORES
+          mem MEMORY
+          GRES [TYPE:]COUNT
+          ...
+        TASKID: file per taskid with current profiling values
+          time SAMPLETIME
+        ...: any other profiling datasets that are enabled
+  ProfileExporterDefault: default profiling value (e.g., "All")
