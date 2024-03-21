@@ -7,3 +7,4 @@ endif
 if WITH_CURL
 SUBDIRS += influxdb
 endif
+SUBDIRS += exporter
