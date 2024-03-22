@@ -9,8 +9,14 @@
 
 #include "src/common/slurm_xlator.h"
 #include "src/common/xstring.h"
+#if SLURM_VERSION_MAJOR(SLURM_VERSION_NUMBER) > 22
 #include "src/interfaces/acct_gather_profile.h"
 #include "src/interfaces/gres.h"
+#else
+#include "src/common/slurm_acct_gather_profile.h"
+#include "src/common/gres.h"
+#define warning info
+#endif
 
 
 /*
