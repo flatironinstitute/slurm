@@ -4,6 +4,7 @@ Version:	26.05.3
 %if %{defined patch} && %{undefined extraver}
 %define extraver .patched
 %endif
+%define dist	fi
 Release:	%{rel}%{?extraver}%{?dist}
 Summary:	Slurm Workload Manager
 
