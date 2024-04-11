@@ -404,6 +404,7 @@ extern int acct_gather_profile_p_add_sample_data(int table_id, void *data,
 		warning("%s %s: write sample %s: %m", plugin_type, __func__, table->name);
 		return SLURM_ERROR;
 	}
+	fchmod(infofd, 0644); /* evade umask */
 
 	dprintf(infofd, "time %lu\n", sample_time);
 	int i;
