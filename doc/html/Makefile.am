@@ -20,10 +20,8 @@ generated_html = \
 	core_spec.html \
 	cpu_management.html \
 	cray.html \
-	disclaimer.html \
 	dist_plane.html \
 	documentation.html \
-	download.html \
 	dynamic_nodes.html \
 	elasticsearch.html \
 	extra_constraints.html \
@@ -50,11 +48,9 @@ generated_html = \
 	man_index.html \
 	mc_support.html \
 	mcs.html \
-	meetings.html \
 	mpi_guide.html \
 	multi_cluster.html \
 	network.html \
-	news.html \
 	nss_slurm.html \
 	openapi_release_notes.html \
 	overview.html \
@@ -73,6 +69,8 @@ generated_html = \
 	qos.html \
 	quickstart_admin.html \
 	quickstart.html \
+	related_software.html \
+	release_notes.html \
 	reservations.html \
 	resource_binding.html \
 	resource_limits.html \
@@ -86,12 +84,9 @@ generated_html = \
 	site_factor.html \
 	slurm.html \
 	slurm_ug_agenda.html \
-	team.html \
-	testimonials.html \
 	topology.html \
 	tres.html \
 	troubleshoot.html \
-	tutorials.html \
 	user_permissions.html \
 	wckey.html
 

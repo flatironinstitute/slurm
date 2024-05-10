@@ -1286,9 +1286,38 @@ extern List depended_list_copy(List depend_list_src);
  */
 extern int drain_nodes ( char *nodes, char *reason, uint32_t reason_uid );
 
+/*
+ * Set job state
+ * IN job_ptr - Job to update
+ * IN state - state from enum job_states
+ */
+extern void job_state_set(job_record_t *job_ptr, uint32_t state);
+
+/*
+ * Set job state flag
+ * IN job_ptr - Job to update
+ * IN flag - flag to set (from JOB_* macro)
+ */
+extern void job_state_set_flag(job_record_t *job_ptr, uint32_t flag);
+
+/*
+ * Unset job state flag
+ * IN job_ptr - Job to update
+ * IN flag - flag to unset (from JOB_* macro)
+ */
+extern void job_state_unset_flag(job_record_t *job_ptr, uint32_t flag);
+
 /* dump_all_job_state - save the state of all jobs to file
  * RET 0 or error code */
 extern int dump_all_job_state ( void );
+
+/*
+ * Notify/update job state hash table that job state has changed
+ * IN job_ptr - Job about to be updated
+ * IN new_state - New value that will be assigned to job_ptr->job_state.
+ *                If NO_VAL, then delete the cache entry.
+ */
+extern void on_job_state_change(job_record_t *job_ptr, uint32_t new_state);
 
 /* dump_all_node_state - save the state of all nodes to file */
 extern int dump_all_node_state ( void );
@@ -1339,6 +1368,70 @@ extern void node_mgr_reset_node_stats(node_record_t *node_ptr);
  * RET copy of depend_list_src, must be freed by caller
  */
 extern List feature_list_copy(List feature_list_src);
+
+typedef enum {
+	FOR_EACH_JOB_BY_ID_EACH_INVALID = 0,
+	FOR_EACH_JOB_BY_ID_EACH_CONT, /* continue for each processing */
+	FOR_EACH_JOB_BY_ID_EACH_STOP, /* stop for each processing */
+	FOR_EACH_JOB_BY_ID_EACH_FAIL, /* stop for each processing due to failure */
+	FOR_EACH_JOB_BY_ID_EACH_INVALID_MAX /* assertion only value on max value */
+} foreach_job_by_id_control_t;
+
+/*
+ *  Function prototype for operating on each job that matches
+ *  Returns control requested for processing
+ */
+typedef foreach_job_by_id_control_t (*JobForEachFunc)(job_record_t *job_ptr,
+						      void *arg);
+/*
+ *  Function prototype for operating on each read only job that matches
+ *  Returns control requested for processing
+ */
+typedef foreach_job_by_id_control_t (*JobROForEachFunc)(const job_record_t
+								*job_ptr,
+							void *arg);
+/*
+ * Function prototype for operating on a job id that is not found
+ * Returns control requested for processing
+ */
+typedef foreach_job_by_id_control_t
+	(*JobNullForEachFunc)(const slurm_selected_step_t *id, void *arg);
+
+/*
+ * Walk all matching job_record_t's that match filter
+ * If a job id is a het job leader or array job leader, then all components of
+ * the het job or all jobs in the array will be walked.
+ * Warning: Caller must hold job write lock
+ *
+ * IN filter - Filter to select jobs
+ * IN callback - Function to call on each matching job record pointer
+ * IN null_callback - (optional) Function to call on each non-matching job id
+ * IN arg - Arbitrary pointer to pass to callback
+ * RET number of jobs matched.
+ * 	negative if callback returns FOR_EACH_JOB_BY_ID_EACH_FAIL.
+ * 	may be zero if no jobs matched.
+ */
+extern int foreach_job_by_id(const slurm_selected_step_t *filter,
+			     JobForEachFunc callback,
+			     JobNullForEachFunc null_callback, void *arg);
+
+/*
+ * Walk all matching read only job_record_t's that match filter
+ * If a job id is a het job leader or array job leader, then all components of
+ * the het job or all jobs in the array will be walked.
+ * Warning: Caller must hold job read lock
+ *
+ * IN filter - Filter to select jobs
+ * IN callback - Function to call on each matching job record pointer
+ * IN null_callback - (optional) Function to call on each non-matching job id
+ * IN arg - Arbitrary pointer to pass to callback
+ * RET number of jobs matched.
+ * 	negative if callback returns FOR_EACH_JOB_BY_ID_EACH_FAIL.
+ * 	may be zero if no jobs matched.
+ */
+extern int foreach_job_by_id_ro(const slurm_selected_step_t *filter,
+				JobROForEachFunc callback,
+				JobNullForEachFunc null_callback, void *arg);
 
 /*
  * find_job_array_rec - return a pointer to the job record with the given
@@ -1715,6 +1808,18 @@ extern int job_str_signal(char *job_id_str, uint16_t signal, uint16_t flags,
 			  uid_t uid, bool preempt);
 
 /*
+ * Signal the jobs matching the specified filters and build a response message
+ * detailing the results of the request.
+ *
+ * IN kill_msg - the specification for which jobs to signal
+ * IN auth_uid - the authenticated UID of the requesting user
+ * OUT resp_msg_p - a response message to send back to the requesting user
+ * RET - SLURM_SUCCESS if successful, an error code otherwise
+ */
+extern int job_mgr_signal_jobs(kill_jobs_msg_t *kill_msg, uid_t auth_uid,
+			       kill_jobs_resp_msg_t **resp_msg_p);
+
+/*
  * job_suspend/job_suspend2 - perform some suspend/resume operation
  * NB job_suspend  - Uses the job_id field and ignores job_id_str
  * NB job_suspend2 - Ignores the job_id field and uses job_id_str
@@ -1959,7 +2064,7 @@ extern void load_part_uid_allow_list ( int force );
  *	slurmctld restart. execute this after loading the configuration
  *	file data.
  */
-extern int load_all_part_state ( void );
+extern int load_all_part_state(uint16_t reconfig_flags);
 
 /*
  * Create a new job step from data in a buffer (as created by
@@ -2033,6 +2138,19 @@ extern void node_no_resp_msg(void);
 /* For a given job ID return the number of PENDING tasks which have their
  * own separate job_record (do not count tasks in pending META job record) */
 extern int num_pending_job_array_tasks(uint32_t array_job_id);
+
+/*
+ * Dump state of jobs given list of jobs (or none for all jobs)
+ * IN filter_jobs_count - number of entries in filter_jobs_ptr array
+ * IN filter_jobs_ptr - array of jobs to filter
+ * IN/OUT jobs_count_ptr - pointer to number of jobs dumped
+ * IN/OUT jobs_pptr - pointer to dumped jobs array
+ * RET SLURM_SUCCESS or error
+ */
+extern int dump_job_state(const uint32_t filter_jobs_count,
+			  const slurm_selected_step_t *filter_jobs_ptr,
+			  uint32_t *jobs_count_ptr,
+			  job_state_response_job_t **jobs_pptr);
 
 /*
  * pack_all_jobs - dump all job information for all jobs in
@@ -2307,6 +2425,23 @@ extern void queue_job_scheduler(void);
  * NOTE: run lock_slurmctld before entry: Read config, write job
  */
 extern void rehash_jobs(void);
+
+/*
+ * Setup and prepare job state cache (if configured)
+ * IN new_hash_table_size - number of entries in hash table
+ */
+extern void setup_job_state_hash(int new_hash_table_size);
+
+#ifndef NDEBUG
+/*
+ * Walk entire job state cache and verify every job matchs job_ptr states
+ * WARNING: slow and expensive to run
+ * WARNING: caller must hold atleast job read lock
+ */
+extern void verify_job_state_cache_synced(void);
+#else
+#define verify_job_state_cache_synced() {}
+#endif
 
 /*
  * Rebuild a job step's core_bitmap_job after a job has just changed size

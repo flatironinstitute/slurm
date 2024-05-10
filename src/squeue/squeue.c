@@ -47,6 +47,8 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 
+#include "slurm/slurm.h"
+
 #include "src/common/read_config.h"
 #include "src/common/slurm_time.h"
 #include "src/common/xstring.h"
@@ -55,6 +57,12 @@
 #include "src/interfaces/select.h"
 
 #include "src/squeue/squeue.h"
+
+typedef struct {
+	int job_ids_count;
+	slurm_selected_step_t *job_ids;
+	int index;
+} job_state_args_t;
 
 /********************
  * Global Variables *
@@ -173,6 +181,116 @@ _get_window_width( void )
 	return width;
 }
 
+static int _foreach_add_job(void *x, void *arg)
+{
+	job_state_args_t *args = arg;
+	squeue_job_step_t *job_step_id = x;
+	slurm_selected_step_t *id = &args->job_ids[args->index];
+
+	*id = (slurm_selected_step_t) SLURM_SELECTED_STEP_INITIALIZER;
+	/* FIXME: squeue_job_step_t doesn't include HetComponent */
+	id->array_task_id = job_step_id->array_id;
+	id->step_id = job_step_id->step_id;
+	args->index++;
+
+	return SLURM_SUCCESS;
+}
+
+static void _populate_array_job_states(job_state_response_job_t *src,
+				       slurm_job_info_t *job)
+{
+	xassert(src->array_job_id);
+
+	job->array_job_id = src->array_job_id;
+	job->array_task_id = src->array_task_id;
+
+	if (!src->array_task_id_bitmap)
+		return;
+
+	job->array_bitmap = bit_copy(src->array_task_id_bitmap);
+	job->array_task_str = bit_fmt_full(job->array_bitmap);
+}
+
+static int _query_job_states(int argc, char **argv)
+{
+	int rc = SLURM_SUCCESS;
+	job_state_response_msg_t *jsr = NULL;
+	job_state_args_t args = { 0 };
+	job_info_msg_t *job_msg = NULL;
+
+	if (params.job_list) {
+		args.job_ids_count = list_count(params.job_list);
+		args.job_ids = xcalloc(args.job_ids_count,
+				       sizeof(*args.job_ids));
+
+		if (list_for_each_ro(params.job_list, _foreach_add_job,
+				     &args) < 0)
+			fatal("list job_ids should not fail");
+	}
+
+	if ((rc = slurm_load_job_state(args.job_ids_count, args.job_ids, &jsr)))
+		goto cleanup;
+
+	if (params.mimetype) {
+		openapi_resp_job_state_t resp = {
+			.jobs = jsr,
+		};
+
+		DATA_DUMP_CLI(OPENAPI_JOB_STATE_RESP, resp, argc, argv, NULL,
+			      params.mimetype, params.data_parser, rc);
+		goto cleanup;
+	}
+
+	if (!params.format && !params.format_long)
+		params.format = "%.18i %.2t";
+
+	if (!params.format_list) {
+		if (params.format)
+			rc = parse_format(params.format);
+		else if (params.format_long)
+			rc = parse_long_format(params.format_long);
+
+		if (rc)
+			goto cleanup;
+	}
+
+	job_msg = xmalloc(sizeof(*job_msg));
+	if (jsr && (jsr->jobs_count > 0)) {
+		job_msg->record_count = jsr->jobs_count;
+		job_msg->job_array = xcalloc(job_msg->record_count,
+					     sizeof(*job_msg->job_array));
+
+		for (int i = 0; i < jsr->jobs_count; i++) {
+			job_state_response_job_t *src = &jsr->jobs[i];
+			slurm_job_info_t *job = &job_msg->job_array[i];
+
+			job->job_id = src->job_id;
+
+			if (src->array_job_id) {
+				_populate_array_job_states(src, job);
+			} else if ((job->het_job_id = src->het_job_id)) {
+				job->het_job_offset =
+					(src->job_id - job->het_job_id);
+				job->array_task_id = NO_VAL;
+			} else {
+				job->array_task_id = NO_VAL;
+			}
+
+			job->job_state = src->state;
+		}
+	}
+
+	rc = print_jobs_array(job_msg->job_array, job_msg->record_count,
+			      params.format_list);
+
+cleanup:
+#ifdef MEMORY_LEAK_DEBUG
+	slurm_free_job_info_msg(job_msg);
+	xfree(args.job_ids);
+	slurm_free_job_state_response_msg(jsr);
+#endif
+	return rc;
+}
 
 /* _print_job - print the specified job's information */
 static int _print_job(bool clear_old, bool log_cluster_name, int argc,
@@ -220,6 +338,8 @@ static int _print_job(bool clear_old, bool log_cluster_name, int argc,
 			error_code = SLURM_SUCCESS;
 			new_job_ptr = old_job_ptr;
 		}
+	} else if (params.only_state) {
+		return (error_code = _query_job_states(argc, argv));
 	} else if (params.job_id) {
 		error_code = slurm_load_job(&new_job_ptr, params.job_id,
 					    show_flags);

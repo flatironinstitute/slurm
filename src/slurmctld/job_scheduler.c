@@ -495,7 +495,7 @@ extern List build_job_queue(bool clear_start, bool backfill)
 		new_job_ptr = job_array_split(job_ptr);
 		debug("%s: Split out %pJ for burst buffer use",
 		      __func__, job_ptr);
-		new_job_ptr->job_state = JOB_PENDING;
+		job_state_set(new_job_ptr, JOB_PENDING);
 		new_job_ptr->start_time = (time_t) 0;
 		/*
 		 * Do NOT clear db_index here, it is handled when task_id_str
@@ -550,7 +550,7 @@ extern List build_job_queue(bool clear_start, bool backfill)
 		new_job_ptr = job_array_split(job_ptr);
 		info("%s: Split out %pJ for SLURM_DEPEND_AFTER_CORRESPOND use",
 		     __func__, job_ptr);
-		new_job_ptr->job_state = JOB_PENDING;
+		job_state_set(new_job_ptr, JOB_PENDING);
 		new_job_ptr->start_time = (time_t) 0;
 		/*
 		 * Do NOT clear db_index here, it is handled when task_id_str
@@ -905,7 +905,7 @@ extern bool deadline_ok(job_record_t *job_ptr, char *func)
 	}
 	if (fail_job) {
 		last_job_update = now;
-		job_ptr->job_state = JOB_DEADLINE;
+		job_state_set(job_ptr, JOB_DEADLINE);
 		job_ptr->exit_code = 1;
 		job_ptr->state_reason = FAIL_DEADLINE;
 		xfree(job_ptr->state_desc);
@@ -1943,7 +1943,7 @@ skip_start:
 			sched_info("schedule: %pJ non-runnable: %s",
 				   job_ptr, slurm_strerror(error_code));
 			last_job_update = now;
-			job_ptr->job_state = JOB_PENDING;
+			job_state_set(job_ptr, JOB_PENDING);
 			job_ptr->state_reason = FAIL_BAD_CONSTRAINTS;
 			xfree(job_ptr->state_desc);
 			job_ptr->start_time = job_ptr->end_time = now;
@@ -4368,6 +4368,11 @@ static void _do_reboot(bool power_save_on, bitstr_t *node_bitmap,
 		       job_record_t *job_ptr, char *reboot_features,
 		       uint16_t protocol_version)
 {
+	xassert(node_bitmap);
+
+	if (bit_ffs(node_bitmap) == -1)
+		return;
+
 	if (power_save_on)
 		power_job_reboot(node_bitmap, job_ptr, reboot_features);
 	else
@@ -4498,18 +4503,17 @@ extern void reboot_job_nodes(job_record_t *job_ptr)
 		if (bit_overlap_any(power_node_bitmap, job_ptr->node_bitmap) ||
 		    bit_overlap_any(booting_node_bitmap,
 				    job_ptr->node_bitmap)) {
-			job_ptr->job_state |= JOB_CONFIGURING;
 			/* Reset job start time when nodes are booted */
-			job_ptr->job_state |= JOB_POWER_UP_NODE;
+			job_state_set_flag(job_ptr, (JOB_CONFIGURING |
+						     JOB_POWER_UP_NODE));
 			job_ptr->wait_all_nodes = 1;
 		}
 
 		goto cleanup;
 	}
 
-	job_ptr->job_state |= JOB_CONFIGURING;
 	/* Reset job start time when nodes are booted */
-	job_ptr->job_state |= JOB_POWER_UP_NODE;
+	job_state_set_flag(job_ptr, (JOB_CONFIGURING | JOB_POWER_UP_NODE));
 	/* launch_job() when all nodes have booted */
 	job_ptr->wait_all_nodes = 1;
 
@@ -4536,12 +4540,20 @@ extern void reboot_job_nodes(job_record_t *job_ptr)
 		/* Reboot nodes to change KNL NUMA and/or MCDRAM mode */
 		_do_reboot(power_save_on, feature_node_bitmap, job_ptr,
 			   reboot_features, protocol_version);
+		bit_and_not(boot_node_bitmap, feature_node_bitmap);
 	}
 
 	if (non_feature_node_bitmap) {
 		/* Reboot nodes with no feature changes */
 		_do_reboot(power_save_on, non_feature_node_bitmap, job_ptr,
 			   NULL, protocol_version);
+		bit_and_not(boot_node_bitmap, non_feature_node_bitmap);
+	}
+
+	if (job_ptr->reboot) {
+		/* Reboot the remaining nodes blindly as per direct request */
+		_do_reboot(power_save_on, boot_node_bitmap, job_ptr, NULL,
+			   protocol_version);
 	}
 
 cleanup:
@@ -4605,7 +4617,7 @@ extern void prolog_slurmctld(job_record_t *job_ptr)
 	if (!prep_g_required(PREP_PROLOG_SLURMCTLD))
 		return;
 	job_ptr->details->prolog_running++;
-	job_ptr->job_state |= JOB_CONFIGURING;
+	job_state_set_flag(job_ptr, JOB_CONFIGURING);
 
 	job_id = xmalloc(sizeof(*job_id));
 	*job_id = job_ptr->job_id;
@@ -5256,7 +5268,7 @@ void cleanup_completing(job_record_t *job_ptr)
 	gs_job_fini(job_ptr);
 
 	delete_step_records(job_ptr);
-	job_ptr->job_state &= (~JOB_COMPLETING);
+	job_state_unset_flag(job_ptr, JOB_COMPLETING);
 	job_hold_requeue(job_ptr);
 
 	/*

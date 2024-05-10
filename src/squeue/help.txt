@@ -22,6 +22,7 @@ Usage: squeue [OPTIONS]
                                   (e.g. 2048M won't be converted to 2G).
   -o, --format=format             format specification
   -O, --Format=format             format specification
+      --only-job-state            Only query job state
   -p, --partition=partition(s)    comma separated list of partitions
                                   to view, default is all partitions
   -q, --qos=qos(s)                comma separated list of qos's

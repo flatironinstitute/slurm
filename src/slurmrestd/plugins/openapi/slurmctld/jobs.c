@@ -66,12 +66,42 @@ static const slurm_err_t nonfatal_errors[] = {
 	ESLURM_LICENSES_UNAVAILABLE,
 };
 
+static int _signal_jobs(openapi_ctxt_t *ctxt)
+{
+	int rc;
+	kill_jobs_msg_t *req = NULL;
+	kill_jobs_resp_msg_t *resp = NULL;
+
+	if (!(rc = DATA_PARSE(ctxt->parser, KILL_JOBS_MSG_PTR, req, ctxt->query,
+			      ctxt->parent_path))) {
+		if (req->user_name && (req->user_id == SLURM_AUTH_NOBODY) &&
+		    (rc = uid_from_string(req->user_name, &req->user_id)))
+			resp_error(ctxt, rc, "uid_from_string()",
+				   "Unable to resolve %s to numeric user id",
+				   req->user_name);
+
+		if (!rc && (rc = slurm_kill_jobs(req, &resp)))
+			resp_error(ctxt, rc, "slurm_kill_jobs()",
+				   "Signal request failed");
+	}
+
+	DUMP_OPENAPI_RESP_SINGLE(OPENAPI_KILL_JOBS_RESP, resp, ctxt);
+
+	slurm_free_kill_jobs_msg(req);
+	slurm_free_kill_jobs_response_msg(resp);
+
+	return rc;
+}
+
 static int _op_handler_jobs(openapi_ctxt_t *ctxt)
 {
 	openapi_job_info_query_t query = {0};
 	job_info_msg_t *job_info_ptr = NULL;
 	openapi_resp_job_info_msg_t resp = {0};
 	int rc;
+
+	if (ctxt->method == HTTP_REQUEST_DELETE)
+		return _signal_jobs(ctxt);
 
 	if (ctxt->method != HTTP_REQUEST_GET) {
 		return resp_error(ctxt, (rc = ESLURM_REST_INVALID_QUERY),
@@ -283,7 +313,10 @@ static void _job_post_submit(ctxt_t *ctxt, job_desc_msg_t *job, char *script)
 		job->script = xstrdup(script);
 	}
 
-	if (slurm_submit_batch_job(job, &resp) || !resp) {
+	if (!job->script || !job->script[0]) {
+		resp_error(ctxt, ESLURM_JOB_SCRIPT_MISSING, "script",
+			   "Batch job script empty or missing");
+	} else if (slurm_submit_batch_job(job, &resp) || !resp) {
 		resp_error(ctxt, errno, "slurm_submit_batch_job()",
 			   "Batch job submission failed");
 	} else {
@@ -328,8 +361,19 @@ static void _job_post_het_submit(ctxt_t *ctxt, list_t *jobs, char *script)
 	if (script) {
 		job_desc_msg_t *j = list_peek(jobs);
 
-		if (!j->script)
-			j->script = xstrdup(script);
+		xfree(j->script);
+		j->script = xstrdup(script);
+	}
+
+	{
+		/* Always verify first Het Component has a batch script */
+		job_desc_msg_t *jdesc = list_peek(jobs);
+
+		if (!jdesc->script || !jdesc->script[0]) {
+			resp_error(ctxt, ESLURM_JOB_SCRIPT_MISSING, __func__,
+				   "Refusing HetJob submission without batch script or empty batch script for first component");
+			goto cleanup;
+		}
 	}
 
 	if (slurm_submit_batch_het_job(jobs, &resp) || !resp) {
@@ -385,7 +429,8 @@ static void _job_post(ctxt_t *ctxt)
 		       ctxt->parent_path))
 		return;
 
-	if (!req.script || !req.script[0]) {
+	if (!req.jobs && (!req.script || !req.script[0]) &&
+	    (!req.job || !req.job->script)) {
 		resp_error(ctxt, ESLURM_REST_INVALID_QUERY, __func__,
 			   "Populated \"script\" field is required for job submission");
 		return;
@@ -462,11 +507,59 @@ static int _op_handler_submit_job(openapi_ctxt_t *ctxt)
 	return ctxt->rc;
 }
 
+static int _op_handler_job_states(openapi_ctxt_t *ctxt)
+{
+	openapi_job_state_query_t query = { 0 };
+	openapi_resp_job_state_t resp = { 0 };
+	int job_id_count = 0;
+	slurm_selected_step_t *job_ids = NULL;
+	int rc;
+
+	if (ctxt->method != HTTP_REQUEST_GET) {
+		return resp_error(ctxt, (rc = ESLURM_REST_INVALID_QUERY),
+				  __func__,
+				  "Unsupported HTTP method requested: %s",
+				  get_http_method_string(ctxt->method));
+	}
+
+	if (DATA_PARSE(ctxt->parser, OPENAPI_JOB_STATE_QUERY, query,
+		       ctxt->query, ctxt->parent_path)) {
+		return resp_error(ctxt, ESLURM_REST_INVALID_QUERY, __func__,
+				  "Rejecting request. Failure parsing query");
+	}
+
+	if (query.job_id_list && !list_is_empty(query.job_id_list)) {
+		slurm_selected_step_t *id = NULL;
+
+		job_ids = xcalloc(list_count(query.job_id_list),
+				  sizeof(*job_ids));
+
+		while ((id = list_pop(query.job_id_list))) {
+			job_ids[job_id_count] = *id;
+			xfree(id);
+			job_id_count++;
+		}
+	}
+
+	if ((rc = slurm_load_job_state(job_id_count, job_ids, &resp.jobs))) {
+		resp_error(ctxt, rc, "slurm_load_job_state()",
+			   "Unable to query job states");
+	}
+
+	rc = DATA_DUMP(ctxt->parser, OPENAPI_JOB_STATE_RESP, resp, ctxt->resp);
+
+	slurm_free_job_state_response_msg(resp.jobs);
+	FREE_NULL_LIST(query.job_id_list);
+	xfree(job_ids);
+	return rc;
+}
+
 extern void init_op_jobs(void)
 {
 	bind_handler("/slurm/{data_parser}/job/submit", _op_handler_submit_job);
 	bind_handler("/slurm/{data_parser}/jobs/", _op_handler_jobs);
 	bind_handler("/slurm/{data_parser}/job/{job_id}", _op_handler_job);
+	bind_handler("/slurm/{data_parser}/jobs/state", _op_handler_job_states);
 }
 
 extern void destroy_op_jobs(void)
@@ -474,4 +567,5 @@ extern void destroy_op_jobs(void)
 	unbind_operation_ctxt_handler(_op_handler_submit_job);
 	unbind_operation_ctxt_handler(_op_handler_job);
 	unbind_operation_ctxt_handler(_op_handler_jobs);
+	unbind_operation_ctxt_handler(_op_handler_job_states);
 }

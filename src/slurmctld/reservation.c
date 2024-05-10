@@ -270,6 +270,7 @@ static int _switch_select_alloc_gres(void *x, void *arg)
 	}
 	gres_js->gres_bit_alloc = gres_js->gres_bit_select;
 	gres_js->gres_bit_select = NULL;
+	xfree(gres_js->gres_cnt_node_alloc);
 	gres_js->gres_cnt_node_alloc = gres_js->gres_cnt_node_select;
 	gres_js->gres_cnt_node_select = NULL;
 	return 0;
@@ -835,7 +836,7 @@ static int _foreach_clear_job_resv(void *x, void *key)
 	    (job_ptr->state_reason != WAIT_HELD)) {
 		xfree(job_ptr->state_desc);
 		job_ptr->state_reason = WAIT_RESV_DELETED;
-		job_ptr->job_state |= JOB_RESV_DEL_HOLD;
+		job_state_set_flag(job_ptr, JOB_RESV_DEL_HOLD);
 		xstrfmtcat(job_ptr->state_desc,
 			   "Reservation %s was deleted",
 			   resv_ptr->name);
@@ -3430,7 +3431,7 @@ static int _validate_reservation_access_update(void *x, void *y)
 	if (!job_use_reservation)
 		return 0;
 
-	if (!_valid_job_access_resv(job_ptr, resv_ptr, false)) {
+	if (_valid_job_access_resv(job_ptr, resv_ptr, false) != SLURM_SUCCESS) {
 		info("Rejecting update of reservation %s, because it's in use by %pJ",
 		     resv_ptr->name, job_ptr);
 		return 1;
@@ -3528,10 +3529,12 @@ extern int update_resv(resv_desc_msg_t *resv_desc_ptr, char **err_msg)
 
 			/*
 			 * If the reservation already has a reoccurring flag
-			 * or is being updated to have multiple reoccurring
-			 * flags, then reject the update
+			 * that differs from the requested one, or is being
+			 * updated to have multiple reoccurring flags, then
+			 * reject the update
 			 */
-			if ((resv_ptr->flags & RESERVE_REOCCURRING) ||
+			if (((resv_ptr->flags & RESERVE_REOCCURRING) !=
+			     (resv_desc_ptr->flags & RESERVE_REOCCURRING)) ||
 			    (_has_multiple_reoccurring(resv_desc_ptr))) {
 				info("Cannot update reservation to have multiple reoccurring flags. Please specify only one reoccurring flag");
 				if (err_msg)
@@ -3976,10 +3979,8 @@ extern int update_resv(resv_desc_msg_t *resv_desc_ptr, char **err_msg)
 		goto update_failure;
 
 	/*
-	 * Verify if we have pending or running jobs using the reservation,
-	 * that lose access to the reservation by the update.
-	 * Reject reservation update if pending job requested it or running job
-	 * makes use of it.
+	 * Reject reservation update if we have pending or running jobs using
+	 * the reservation, that lose access to the reservation by the update.
 	 * This has to happen after _set_assoc_list
 	 */
 	if ((job_ptr = list_find_first(job_list,
@@ -4556,7 +4557,7 @@ static int _validate_job_resv(void *job, void *y)
 		error("%pJ linked to invalid reservation: %s, holding the job.",
 		      job_ptr, job_ptr->resv_name);
 		job_ptr->state_reason = WAIT_RESV_INVALID;
-		job_ptr->job_state |= JOB_RESV_DEL_HOLD;
+		job_state_set_flag(job_ptr, JOB_RESV_DEL_HOLD);
 		xstrfmtcat(job_ptr->state_desc,
 			   "Reservation %s is invalid",
 			   job_ptr->resv_name);
@@ -5266,18 +5267,40 @@ static int _combine_gres_list_exc(void *object, void *arg)
 		gres_job_state_t *gres_js = gres_state_job->gres_data;
 		gres_js->total_gres += gres_js_in->total_gres;
 
-		for (int i = 0; i < gres_js_in->node_cnt; i++) {
-			if (!gres_js_in->gres_bit_alloc[i])
-				continue;
-			if (!gres_js->gres_bit_alloc[i])
-				gres_js->gres_bit_alloc[i] =
-					bit_copy(gres_js_in->gres_bit_alloc[i]);
-			else
-				bit_or(gres_js->gres_bit_alloc[i],
-				       gres_js_in->gres_bit_alloc[i]);
+		/*
+		 * At the moment we only care about gres_js->gres_bit_alloc and
+		 * gres_js->gres_cnt_node_alloc.
+		 */
+		if (gres_js_in->gres_bit_alloc) {
+			if (!gres_js->gres_bit_alloc)
+				gres_js->gres_bit_alloc =
+					xcalloc(gres_js->node_cnt,
+						sizeof(bitstr_t *));
+			for (int i = 0; i < gres_js_in->node_cnt; i++) {
+				if (!gres_js_in->gres_bit_alloc[i])
+					continue;
+				if (!gres_js->gres_bit_alloc[i])
+					gres_js->gres_bit_alloc[i] =
+						bit_copy(gres_js_in->
+							 gres_bit_alloc[i]);
+				else
+					bit_or(gres_js->gres_bit_alloc[i],
+					       gres_js_in->gres_bit_alloc[i]);
+			}
+		}
+
+		if (gres_js_in->gres_cnt_node_alloc) {
+			if (!gres_js->gres_cnt_node_alloc)
+				gres_js->gres_cnt_node_alloc =
+					xcalloc(gres_js->node_cnt,
+						sizeof(uint64_t));
+			for (int i = 0; i < gres_js_in->node_cnt; i++) {
+				gres_js->gres_cnt_node_alloc[i] +=
+					gres_js_in->gres_cnt_node_alloc[i];
+			}
 		}
 	}
-	/* We only care about gres_js->gres_bit_alloc */
+
 	return 1;
 }
 

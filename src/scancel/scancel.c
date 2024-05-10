@@ -123,6 +123,192 @@ main (int argc, char **argv)
 	exit(rc);
 }
 
+static uint16_t _init_flags(char **job_type)
+{
+	uint16_t flags = 0;
+
+	if (opt.batch) {
+		flags |= KILL_JOB_BATCH;
+		if (job_type)
+			*job_type = "batch ";
+	}
+
+	/*
+	 * With the introduction of the ScronParameters=explicit_scancel option,
+	 * scancel requests for a cron job should be rejected unless the --cron
+	 * flag is specified.
+	 * To prevent introducing this option from influencing anything other
+	 * than user requests, it has been set up so that when KILL_NO_CRON is
+	 * set when explicit_scancel is also set, the request will be rejected.
+	 */
+	if (!opt.cron)
+		flags |= KILL_NO_CRON;
+
+	if (opt.full) {
+		flags |= KILL_FULL_JOB;
+		if (job_type)
+			*job_type = "full ";
+	}
+	if (opt.hurry)
+		flags |= KILL_HURRY;
+
+	return flags;
+}
+
+static bool _has_filter_opt(void)
+{
+	return ((opt.account) ||
+		(opt.job_name) ||
+		(opt.nodelist) ||
+		(opt.partition) ||
+		(opt.qos) ||
+		(opt.reservation) ||
+		(opt.state != JOB_END) ||
+		(opt.user_name) ||
+		(opt.wckey));
+}
+
+static char *_filters2str(void)
+{
+	char *str = NULL;
+
+	if (opt.account)
+		xstrfmtcat(str, "account=%s ", opt.account);
+	if (opt.job_name)
+		xstrfmtcat(str, "job_name=%s ", opt.job_name);
+	if (opt.nodelist)
+		xstrfmtcat(str, "nodelist=%s ", opt.nodelist);
+	if (opt.partition)
+		xstrfmtcat(str, "partition=%s ", opt.partition);
+	if (opt.qos)
+		xstrfmtcat(str, "qos=%s ", opt.qos);
+	if (opt.reservation)
+		xstrfmtcat(str, "reservation=%s ", opt.reservation);
+	if (opt.state != JOB_END) {
+		xstrfmtcat(str, "state=%s ",
+			   job_state_string(opt.state));
+	}
+	if (opt.user_name)
+		xstrfmtcat(str, "user_name=%s ", opt.user_name);
+	if (opt.wckey)
+		xstrfmtcat(str, "wckey=%s ", opt.wckey);
+
+	return str;
+}
+
+static void _log_filter_err_msg(void)
+{
+	char *err_msg = _filters2str();
+
+	if (err_msg) {
+		error("No active jobs match ALL job filters, including: %s",
+		      err_msg);
+		xfree(err_msg);
+	}
+}
+
+static void _log_signal_job_msg(char *job_type, char *job_id_str,
+				uint16_t signal)
+{
+	/*
+	 * If signal was not explicitly requested, just say "terminating job".
+	 * Otherwise, specify the signal number even if it is SIGKILL which is
+	 * the default.
+	 */
+	if (opt.signal == NO_VAL16)
+		verbose("Terminating %sjob %s", job_type, job_id_str);
+	else
+		verbose("Signal %u to %sjob %s", signal, job_type, job_id_str);
+}
+
+static void _log_kill_job_error(char *job_id_str, char *err_msg)
+{
+	error("Kill job error on job id %s: %s", job_id_str, err_msg);
+}
+
+static int _ctld_signal_jobs(void)
+{
+	int rc;
+	bool successful_job_resp = false;
+	char *job_type = "";
+	kill_jobs_msg_t kill_msg = {
+		.account = opt.account,
+		.job_name = opt.job_name,
+		.jobs_array = opt.job_list,
+		.jobs_cnt = opt.job_cnt,
+		.partition = opt.partition,
+		.qos = opt.qos,
+		.reservation = opt.reservation,
+		.signal = opt.signal,
+		.state = opt.state,
+		.user_id = opt.user_id,
+		.user_name = opt.user_name,
+		.wckey = opt.wckey,
+		.nodelist = opt.nodelist,
+	};
+	kill_jobs_resp_msg_t *kill_msg_resp = NULL;
+
+	kill_msg.flags = _init_flags(&job_type);
+	if (opt.verbose)
+		kill_msg.flags |= KILL_JOBS_VERBOSE;
+	if (kill_msg.signal == NO_VAL16)
+		kill_msg.signal = SIGKILL;
+
+	if ((rc = slurm_kill_jobs(&kill_msg, &kill_msg_resp))) {
+		error("%s", slurm_strerror(rc));
+		return rc;
+	}
+
+	for (int i = 0; i < kill_msg_resp->jobs_cnt; i++) {
+		kill_jobs_resp_job_t *job_resp =
+			&kill_msg_resp->job_responses[i];
+		uint32_t error_code = job_resp->error_code;
+
+		if (error_code == SLURM_SUCCESS)
+			successful_job_resp = true;
+
+		if (opt.verbose ||
+		    ((error_code != ESLURM_ALREADY_DONE) &&
+		     (error_code != ESLURM_INVALID_JOB_ID))) {
+			char *job_id_str = NULL;
+
+			/*
+			 * FIXME:
+			 * If in a federation and we use scancel -Mall then
+			 * we can get some errors returned for some jobs
+			 * from one cluster but then the other cluster would
+			 * return success for all jobs. It would be nice to
+			 * handle this situation better.
+			 * In addition if we only signalled some clusters and
+			 * got responses for jobs that were revoked and thus
+			 * unable to be signalled, we could forward the request
+			 * to job_resp->sibling rather than just log an error
+			 * here.
+			 */
+
+			rc = fmt_job_id_string(job_resp->id, &job_id_str);
+			if (rc != SLURM_SUCCESS)
+				error("Bad job id format returned: %s; %s",
+				      slurm_strerror(rc), job_resp->error_msg);
+			else if (job_resp->error_code != SLURM_SUCCESS)
+				_log_kill_job_error(job_id_str,
+						    job_resp->error_msg);
+			else
+				_log_signal_job_msg(job_type, job_id_str,
+						    kill_msg.signal);
+			xfree(job_id_str);
+		}
+	}
+
+	if (opt.verbose && _has_filter_opt() &&
+	    (!kill_msg_resp->jobs_cnt || !successful_job_resp))
+		_log_filter_err_msg();
+
+	slurm_free_kill_jobs_response_msg(kill_msg_resp);
+
+	return SLURM_SUCCESS;
+}
+
 /* _multi_cluster - process job cancellation across a list of clusters */
 static int
 _multi_cluster(List clusters)
@@ -150,20 +336,13 @@ _proc_cluster(void)
 		rc = _signal_job_by_str();
 		return rc;
 	}
+	if (opt.ctld && !has_job_steps())
+		return _ctld_signal_jobs();
 
 	_load_job_records();
 	rc = _verify_job_ids();
-	if ((opt.account) ||
-	    (opt.job_name) ||
-	    (opt.nodelist) ||
-	    (opt.partition) ||
-	    (opt.qos) ||
-	    (opt.reservation) ||
-	    (opt.state != JOB_END) ||
-	    (opt.user_name) ||
-	    (opt.wckey)) {
+	if (_has_filter_opt())
 		_filter_job_records();
-	}
 	rc2 = _cancel_jobs();
 	rc = MAX(rc, rc2);
 	slurm_free_job_info_msg(job_buffer_ptr);
@@ -278,9 +457,8 @@ static int _verify_job_ids(void)
 		if (opt.verbose < 0) {
 			;
 		} else if (opt.step_id[j] == SLURM_BATCH_SCRIPT) {
-			error("Kill job error on job id %s: %s",
-			      job_id_str,
-			      slurm_strerror(ESLURM_INVALID_JOB_ID));
+			char *err_msg = slurm_strerror(ESLURM_INVALID_JOB_ID);
+			_log_kill_job_error(job_id_str, err_msg);
 		} else {
 			error("Kill job error on job step id %s.%u: %s",
 			      job_id_str, opt.step_id[j],
@@ -363,17 +541,6 @@ static void _filter_job_records(void)
 		}
 
 		if (opt.nodelist) {
-			/* If nodelist contains a '/', treat it as a file name */
-			if (strchr(opt.nodelist, '/') != NULL) {
-				char *reallist;
-				reallist = slurm_read_hostfile(opt.nodelist,
-							       NO_VAL);
-				if (reallist) {
-					xfree(opt.nodelist);
-					opt.nodelist = reallist;
-				}
-			}
-
 			hostset_t *hs = hostset_create(job_ptr->nodes);
 			if (!hostset_intersects(hs, opt.nodelist)) {
 				job_ptr->job_id = 0;
@@ -431,34 +598,9 @@ static void _filter_job_records(void)
 	}
 
 
-	if ((job_matches == 0) && (opt.verbose > 0)) {
-		char *err_msg = NULL;
-		if (opt.account)
-			xstrfmtcat(err_msg, "account=%s ", opt.account);
-		if (opt.job_name)
-			xstrfmtcat(err_msg, "job_name=%s ", opt.job_name);
-		if (opt.nodelist)
-			xstrfmtcat(err_msg, "nodelist=%s ", opt.nodelist);
-		if (opt.partition)
-			xstrfmtcat(err_msg, "partition=%s ", opt.partition);
-		if (opt.qos)
-			xstrfmtcat(err_msg, "qos=%s ", opt.qos);
-		if (opt.reservation)
-			xstrfmtcat(err_msg, "reservation=%s ", opt.reservation);
-		if (opt.state != JOB_END) {
-			xstrfmtcat(err_msg, "state=%s ",
-				   job_state_string(opt.state));
-		}
-		if (opt.user_name)
-			xstrfmtcat(err_msg, "user_name=%s ", opt.user_name);
-		if (opt.wckey)
-			xstrfmtcat(err_msg, "wckey=%s ", opt.wckey);
-		if (err_msg) {
-			error("No active jobs match ALL job filters, including: %s",
-			      err_msg);
-			xfree(err_msg);
-		}
-	}
+	if ((job_matches == 0) && (opt.verbose > 0))
+		_log_filter_err_msg();
+
 	return;
 }
 
@@ -718,37 +860,14 @@ _cancel_job_id (void *ci)
 {
 	int error_code = SLURM_SUCCESS, i;
 	job_cancel_info_t *cancel_info = (job_cancel_info_t *)ci;
-	bool sig_set = true;
 	uint16_t flags = 0;
 	char *job_type = "";
 	DEF_TIMERS;
 
+	flags = _init_flags(&job_type);
 	if (cancel_info->sig == NO_VAL16) {
 		cancel_info->sig = SIGKILL;
-		sig_set = false;
 	}
-	if (opt.batch) {
-		flags |= KILL_JOB_BATCH;
-		job_type = "batch ";
-	}
-
-	/*
-	 * With the introduction of the ScronParameters=explicit_scancel option,
-	 * scancel requests for a cron job should be rejected unless the --cron
-	 * flag is specified.
-	 * To prevent introducing this option from influencing anything other
-	 * than user requests, it has been set up so that when KILL_NO_CRON is
-	 * set when explicit_scancel is also set, the request will be rejected.
-	 */
-	if (!opt.cron)
-		flags |= KILL_NO_CRON;
-
-	if (opt.full) {
-		flags |= KILL_FULL_JOB;
-		job_type = "full ";
-	}
-	if (opt.hurry)
-		flags |= KILL_HURRY;
 
 	if (!cancel_info->job_id_str) {
 		if (cancel_info->array_job_id &&
@@ -765,13 +884,8 @@ _cancel_job_id (void *ci)
 		}
 	}
 
-	if (!sig_set) {
-		verbose("Terminating %sjob %s", job_type,
-			cancel_info->job_id_str);
-	} else {
-		verbose("Signal %u to %sjob %s", cancel_info->sig, job_type,
-			cancel_info->job_id_str);
-	}
+	_log_signal_job_msg(job_type, cancel_info->job_id_str,
+			    cancel_info->sig);
 
 	for (i = 0; i < MAX_CANCEL_RETRY; i++) {
 		_add_delay();
@@ -797,9 +911,8 @@ _cancel_job_id (void *ci)
 		if ((opt.verbose > 0) ||
 		    ((error_code != ESLURM_ALREADY_DONE) &&
 		     (error_code != ESLURM_INVALID_JOB_ID))) {
-			error("Kill job error on job id %s: %s",
-			      cancel_info->job_id_str,
-			      slurm_strerror(slurm_get_errno()));
+			_log_kill_job_error(cancel_info->job_id_str,
+					    slurm_strerror(slurm_get_errno()));
 		}
 		if (((error_code == ESLURM_ALREADY_DONE) ||
 		     (error_code == ESLURM_INVALID_JOB_ID)) &&

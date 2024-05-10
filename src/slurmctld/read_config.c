@@ -1026,8 +1026,7 @@ static int _foreach_requeue_job_node_failed(void *x, void *arg)
 			error("Unable to requeue %pJ: %s",
 			      job_ptr, slurm_strerror(rc));
 	}
-
-	job_ptr->job_state &= (~JOB_REQUEUE);
+	job_state_unset_flag(job_ptr, JOB_REQUEUE);
 
 	return rc;
 }
@@ -1045,7 +1044,7 @@ static void _abort_job(job_record_t *job_ptr, uint32_t job_state,
 {
 	time_t now = time(NULL);
 
-	job_ptr->job_state = job_state | JOB_COMPLETING;
+	job_state_set(job_ptr, (job_state | JOB_COMPLETING));
 	build_cg_bitmap(job_ptr);
 	job_ptr->end_time = MIN(job_ptr->end_time, now);
 	job_ptr->state_reason = state_reason;
@@ -1423,17 +1422,17 @@ void _sync_jobs_to_conf(void)
 			if (IS_JOB_PENDING(job_ptr)) {
 				job_ptr->start_time =
 					job_ptr->end_time = time(NULL);
-				job_ptr->job_state = JOB_NODE_FAIL;
+				job_state_set(job_ptr, JOB_NODE_FAIL);
 			} else if (IS_JOB_RUNNING(job_ptr)) {
 				job_ptr->end_time = time(NULL);
-				job_ptr->job_state =
-					JOB_NODE_FAIL | JOB_COMPLETING;
+				job_state_set(job_ptr, (JOB_NODE_FAIL |
+							JOB_COMPLETING));
 				build_cg_bitmap(job_ptr);
 				was_running = true;
 			} else if (IS_JOB_SUSPENDED(job_ptr)) {
 				job_ptr->end_time = job_ptr->suspend_time;
-				job_ptr->job_state =
-					JOB_NODE_FAIL | JOB_COMPLETING;
+				job_state_set(job_ptr, (JOB_NODE_FAIL |
+							JOB_COMPLETING));
 				build_cg_bitmap(job_ptr);
 				job_ptr->tot_sus_time +=
 					difftime(now, job_ptr->suspend_time);
@@ -1457,7 +1456,7 @@ void _sync_jobs_to_conf(void)
 				 */
 				info("Attempting to requeue failed job %pJ",
 				     job_ptr);
-				job_ptr->job_state |= JOB_REQUEUE;
+				job_state_set_flag(job_ptr, JOB_REQUEUE);
 
 				/* Reset node_cnt to exclude vanished nodes */
 				job_ptr->node_cnt = bit_set_count(
@@ -1562,6 +1561,7 @@ int read_slurm_conf(int recover, bool reconfig)
 	uint16_t old_select_type_p = slurm_conf.select_type_param;
 	bool cgroup_mem_confinement = false;
 	uint32_t old_max_node_cnt = 0;
+	uint16_t reconfig_flags = slurm_conf.reconfig_flags;
 
 	/* initialization */
 	START_TIMER;
@@ -1802,9 +1802,10 @@ int read_slurm_conf(int recover, bool reconfig)
 	} else if (recover == 1) {	/* Load job & node state files */
 		load_job_ret = load_all_job_state();
 	} else if (recover > 1) {	/* Load node, part & job state files */
-		(void) load_all_part_state();
+		reconfig_flags |= RECONFIG_KEEP_PART_INFO;
 		load_job_ret = load_all_job_state();
 	}
+	(void) load_all_part_state(reconfig_flags);
 
 	/*
 	 * _build_node_config_bitmaps() must be called before

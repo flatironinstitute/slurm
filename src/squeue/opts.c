@@ -70,6 +70,12 @@
 #define OPT_LONG_JSON         0x110
 #define OPT_LONG_YAML         0x111
 #define OPT_LONG_AUTOCOMP     0x112
+/*
+ * OPT_LONG_ONLY_JOB_STATE was added in 23.11.5. At the time, the master branch
+ * already used up to 0x116. So, OPT_LONG_ONLY_JOB_STATE was set to 0x117. We
+ * are setting it to 0x117 here as well to be consistent.
+ */
+#define OPT_LONG_ONLY_JOB_STATE   0x117
 
 /* FUNCTIONS */
 static list_t *_build_job_list(char *str);
@@ -128,6 +134,7 @@ parse_command_line( int argc, char* *argv )
 		{"nodes",      required_argument, 0, 'w'},
 		{"nodelist",   required_argument, 0, 'w'},
 		{"noheader",   no_argument,       0, 'h'},
+		{"only-job-state", no_argument, 0, OPT_LONG_ONLY_JOB_STATE},
 		{"partitions", required_argument, 0, 'p'},
 		{"priority",   no_argument,       0, 'P'},
 		{"qos",        required_argument, 0, 'q'},
@@ -342,6 +349,9 @@ parse_command_line( int argc, char* *argv )
 			xstrfmtcat(params.users, "%u", geteuid());
 			params.user_list = _build_user_list(params.users);
 			break;
+		case OPT_LONG_ONLY_JOB_STATE:
+			params.only_state = true;
+			break;
 		case OPT_LONG_SIBLING:
 			params.sibling_flag = true;
 			break;
@@ -378,6 +388,9 @@ parse_command_line( int argc, char* *argv )
 
 	if (params.long_list && params.format)
 		fatal("Options -o(--format) and -l(--long) are mutually exclusive. Please remove one and retry.");
+
+	if (params.only_state && params.step_flag)
+		fatal("Options --only-job-state and -s(--steps) are mutually exclusive. Please remove one and retry.");
 
 	if (!override_format_env) {
 		if ((env_val = getenv("SQUEUE_FORMAT")))
@@ -1863,6 +1876,7 @@ _print_options(void)
 	printf( "local       = %s\n", params.local_flag ? "true" : "false");
 	printf( "names       = %s\n", params.names );
 	printf( "nodes       = %s\n", hostlist ) ;
+	printf( "only_job_state = %s\n", params.only_state ? "true" : "false");
 	printf( "partitions  = %s\n", params.partitions ) ;
 	printf( "priority    = %s\n", params.priority_flag ? "true" : "false");
 	printf( "reservation = %s\n", params.reservation ) ;

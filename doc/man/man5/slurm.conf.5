@@ -1,4 +1,4 @@
-.TH "slurm.conf" "5" "Slurm Configuration File" "February 2024" "Slurm Configuration File"
+.TH "slurm.conf" "5" "Slurm Configuration File" "April 2024" "Slurm Configuration File"
 
 .SH "NAME"
 slurm.conf \- Slurm configuration file
@@ -500,6 +500,12 @@ Used by \fIauth/munge\fR and \fIcred/munge\fR.
 Credential lifetime, in seconds (e.g. "ttl=300").
 The default value is dependent upon the MUNGE installation, but is typically
 300 seconds.
+.IP
+
+.TP
+\fBuse_client_ids\fR
+Allow the \fIauth/slurm\fR plugin to authenticate users without relying on
+the user information from LDAP or the operating system.
 .RE
 .IP
 
@@ -550,7 +556,7 @@ required if more time is required to execute the \fBProlog\fR, load
 user environment variables, or if the slurmd daemon gets paged from memory.
 .br
 .br
-\fBNote\fR: The test for a job being successfully launched is only performed when
+\fBNOTE\fR: The test for a job being successfully launched is only performed when
 the Slurm daemon on the compute node registers state with the slurmctld daemon
 on the head node, which happens fairly rarely.
 Therefore a job will not necessarily be terminated if its start time exceeds
@@ -4797,24 +4803,29 @@ Log errors and verbose informational messages and even more debugging messages
 .TP
 \fBSlurmctldHost\fR
 The short, or long, hostname of the machine where Slurm control daemon is
-executed (i.e. the name returned by the command "hostname \-s"). If the host
-where slurmctld will run may be modified by another process, such as
-pacemaker, then a comma\-delimited list with the hostname of every machine
-should be provided.
-This hostname is optionally followed by the address, either the IP address or
+executed (i.e. the name returned by the command "hostname \-s").
+This hostname is optionally followed by either the IP address or
 a name by which the address can be identified, enclosed in parentheses. e.g.
 .nf
 SlurmctldHost=slurmctl\-primary(12.34.56.78)
 .fi
-or
+
+If the host where slurmctld will run may be modified by another process, such as
+pacemaker, then a comma\-delimited list with the hostname of every machine
+should be provided. e.g.
 .nf
 SlurmctldHost=slurmctl\-primary1,slurmctl\-primary2,slurmctl\-primary3(slurmctl\-primary)
 .fi
+
 SlurmctldHost must be specified at least once. If specified more than once, the
 first entry will run as the primary and all other entries as backups.
 If the first specified host fails, the daemon will execute on the second host.
 If both the first and second specified host fails, the daemon will execute on
 the third host.
+
+Having an entry with a comma\-delimited list is mutually exclusive with having
+multiple SlurmctldHost entries.
+
 Slurm daemons need to be reconfigured (e.g. "scontrol reconfig") for changes to
 this parameter to take effect. It is okay for jobs to be running when making
 these changes, as the running steps will get the updated SlurmctldHost info.
@@ -4872,6 +4883,15 @@ if the filename has no path separators and is located adjacent to slurm.conf.
 \fBNOTE\fR: \fBProlog\fR and \fBEpilog\fR scripts will only be pushed if the
 filenames have no path separators and are located adjacent to slurm.conf.
 Glob patterns (See \fBglob\fR (7)) are not supported.
+.IP
+
+.TP
+\fBenable_job_state_cache\fR
+Enable slurmctld to cache all job states to allow
+`\fBsqueue\fR --only-state-only` to be able to query job states with out
+grabbing the global job read lock which can slow down scheduling.
+\fBWARNING\fR: This is considered experimental functionality and should not be
+used in production.
 .IP
 
 .TP
@@ -5017,7 +5037,7 @@ two numbers separated by a dash (e.g. \fBSlurmctldPort=6817\-6818\fR).
 execute on the same nodes or the values of \fBSlurmctldPort\fR and
 \fBSlurmdPort\fR must be different.
 
-\fBNote\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
+\fBNOTE\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
 automatically try to interact with anything opened on ports 8192\-60000.
 Configure SlurmctldPort to use a port outside of the configured SrunPortRange
 and RSIP's port range.
@@ -5251,7 +5271,7 @@ build time. If none is explicitly specified, its value will be 6818.
 on the same nodes or the values of \fBSlurmctldPort\fR and \fBSlurmdPort\fR
 must be different.
 
-\fBNote\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
+\fBNOTE\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
 automatically try to interact with anything opened on ports 8192\-60000.
 Configure SlurmdPort to use a port outside of the configured SrunPortRange
 and RSIP's port range.
@@ -5412,31 +5432,24 @@ by the kernel. Using this parameter allow sites to configure a range of ports
 from which srun ports will be selected. This is useful if sites want to
 allow only certain port range on their network.
 
-\fBNote\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
+\fBNOTE\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
 automatically try to interact with anything opened on ports 8192\-60000.
 Configure SrunPortRange to use a range of ports above those used by RSIP,
 ideally 1000 or more ports, for example "SrunPortRange=60001\-63000".
 
-\fBNote\fR: \fBSrunPortRange\fR must be large enough to cover the expected
+\fBNOTE\fR: \fBSrunPortRange\fR must be large enough to cover the expected
 number of srun ports created. A single srun opens 4 listening ports plus 2
-more for every 48 hosts beyond the first 48. Example:
-.IP
-.RS
-.TP
-\fBsrun \-N 1\fR will use 4 listening ports.
-.IP
+more for every 48 hosts beyond the first 48. Use of the \fB\-\-pty\fR option
+will result in an additional port being used.
 
-.TP
-\fBsrun \-N 48\fR will use 4 listening ports.
-.IP
-
-.TP
-\fBsrun \-N 50\fR will use 6 listening ports.
-.IP
-
-.TP
-\fBsrun \-N 200\fR will use 12 listening ports.
-.RE
+Example:
+.nf
+srun \-N 1        will use 4 listening ports.
+srun \-\-pty \-N 1  will use 5 listening ports.
+srun \-N 48       will use 4 listening ports.
+srun \-N 50       will use 6 listening ports.
+srun \-N 200      will use 12 listening ports.
+.fi
 .IP
 
 .TP
@@ -6383,7 +6396,7 @@ for all \fBslurmd\fR daemons on all compute nodes as defined by the
 recommended except for development or testing purposes. If multiple
 \fBslurmd\fR daemons execute on a node this can specify a range of ports.
 
-\fBNote\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
+\fBNOTE\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
 automatically try to interact with anything opened on ports 8192\-60000.
 Configure Port to use a port outside of the configured SrunPortRange and
 RSIP's port range.
@@ -6678,7 +6691,7 @@ number for all \fBslurmd\fR daemons on all frontend nodes as defined by the
 \fBSlurmdPort\fR configuration parameter. Use of this option is not generally
 recommended except for development or testing purposes.
 
-\fBNote\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
+\fBNOTE\fR: On Cray systems, Realm\-Specific IP Addressing (RSIP) will
 automatically try to interact with anything opened on ports 8192\-60000.
 Configure Port to use a port outside of the configured SrunPortRange and
 RSIP's port range.

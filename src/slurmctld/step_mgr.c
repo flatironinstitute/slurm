@@ -4272,7 +4272,8 @@ static int _pack_job_steps(void *x, void *arg)
 				return 0;
 		} else if (!assoc_mgr_is_user_acct_coord(acct_db_conn,
 							 args->uid,
-							 job_ptr->account)) {
+							 job_ptr->account,
+							 false)) {
 			return 0;
 		}
 	}
@@ -5255,20 +5256,16 @@ extern int load_step_state(job_record_t *job_ptr, buf_t *buffer,
 		safe_unpackstr(&tres_freq, buffer);
 
 		safe_unpackstr(&tres_per_step, buffer);
-		xstrsubstituteall(tres_per_step,
-				  "gres:", "gres/");
+		slurm_format_tres_string(&tres_per_step, "gres");
 
 		safe_unpackstr(&tres_per_node, buffer);
-		xstrsubstituteall(tres_per_node,
-				  "gres:", "gres/");
+		slurm_format_tres_string(&tres_per_node, "gres");
 
 		safe_unpackstr(&tres_per_socket, buffer);
-		xstrsubstituteall(tres_per_socket,
-				  "gres:", "gres/");
+		slurm_format_tres_string(&tres_per_socket, "gres");
 
 		safe_unpackstr(&tres_per_task, buffer);
-		xstrsubstituteall(tres_per_task,
-				  "gres:", "gres/");
+		slurm_format_tres_string(&tres_per_task, "gres");
 
 		if (jobacctinfo_unpack(&jobacct, protocol_version,
 				       PROTOCOL_TYPE_SLURM, buffer, true))
@@ -5344,20 +5341,16 @@ extern int load_step_state(job_record_t *job_ptr, buf_t *buffer,
 		safe_unpackstr(&tres_freq, buffer);
 
 		safe_unpackstr(&tres_per_step, buffer);
-		xstrsubstituteall(tres_per_step,
-				  "gres:", "gres/");
+		slurm_format_tres_string(&tres_per_step, "gres");
 
 		safe_unpackstr(&tres_per_node, buffer);
-		xstrsubstituteall(tres_per_node,
-				  "gres:", "gres/");
+		slurm_format_tres_string(&tres_per_node, "gres");
 
 		safe_unpackstr(&tres_per_socket, buffer);
-		xstrsubstituteall(tres_per_socket,
-				  "gres:", "gres/");
+		slurm_format_tres_string(&tres_per_socket, "gres");
 
 		safe_unpackstr(&tres_per_task, buffer);
-		xstrsubstituteall(tres_per_task,
-				  "gres:", "gres/");
+		slurm_format_tres_string(&tres_per_task, "gres");
 
 		if (jobacctinfo_unpack(&jobacct, protocol_version,
 				       PROTOCOL_TYPE_SLURM, buffer, true))
@@ -5690,7 +5683,7 @@ extern int update_step(step_update_request_msg_t *req, uid_t uid)
 
 	if ((job_ptr->user_id != uid) && !validate_operator(uid) &&
 	    !assoc_mgr_is_user_acct_coord(acct_db_conn, uid,
-					  job_ptr->account)) {
+					  job_ptr->account, false)) {
 		error("Security violation, STEP_UPDATE RPC from uid %u", uid);
 		return ESLURM_USER_ID_MISSING;
 	}

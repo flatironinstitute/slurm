@@ -110,8 +110,9 @@ directory in this example will be cleaned up by systemd once the user logs
 out of the node.
 </p>
 
-<ul>
-<li>oci.conf example for runc using create/start:
+<h3 id="runc_create_start">oci.conf example for runc using create/start:
+<a class="slurm_link" href="#runc_create_start"></a></h3>
+<p>
 <pre>
 EnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
 RunTimeEnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
@@ -120,9 +121,12 @@ RunTimeCreate="runc --rootless=true --root=/run/user/%U/ create %n.%u.%j.%s.%t -
 RunTimeStart="runc --rootless=true --root=/run/user/%U/ start %n.%u.%j.%s.%t"
 RunTimeKill="runc --rootless=true --root=/run/user/%U/ kill -a %n.%u.%j.%s.%t"
 RunTimeDelete="runc --rootless=true --root=/run/user/%U/ delete --force %n.%u.%j.%s.%t"
-</pre></li>
+</pre>
+</p>
 
-<li>oci.conf example for runc using run (suggested):
+<h3 id="runc_run">oci.conf example for runc using run (suggested):
+<a class="slurm_link" href="#runc_run"></a></h3>
+<p>
 <pre>
 EnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
 RunTimeEnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
@@ -130,9 +134,12 @@ RunTimeQuery="runc --rootless=true --root=/run/user/%U/ state %n.%u.%j.%s.%t"
 RunTimeKill="runc --rootless=true --root=/run/user/%U/ kill -a %n.%u.%j.%s.%t"
 RunTimeDelete="runc --rootless=true --root=/run/user/%U/ delete --force %n.%u.%j.%s.%t"
 RunTimeRun="runc --rootless=true --root=/run/user/%U/ run %n.%u.%j.%s.%t -b %b"
-</pre></li>
+</pre>
+</p>
 
-<li>oci.conf example for crun using create/start:
+<h3 id="crun_create_start">oci.conf example for crun using create/start:
+<a class="slurm_link" href="#crun_create_start"></a></h3>
+<p>
 <pre>
 EnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
 RunTimeEnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
@@ -141,9 +148,12 @@ RunTimeKill="crun --rootless=true --root=/run/user/%U/ kill -a %n.%u.%j.%s.%t"
 RunTimeDelete="crun --rootless=true --root=/run/user/%U/ delete --force %n.%u.%j.%s.%t"
 RunTimeCreate="crun --rootless=true --root=/run/user/%U/ create --bundle %b %n.%u.%j.%s.%t"
 RunTimeStart="crun --rootless=true --root=/run/user/%U/ start %n.%u.%j.%s.%t"
-</pre></li>
+</pre>
+</p>
 
-<li>oci.conf example for crun using run (suggested):
+<h3 id="crun_run">oci.conf example for crun using run (suggested):
+<a class="slurm_link" href="#crun_run"></a></h3>
+<p>
 <pre>
 EnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
 RunTimeEnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
@@ -151,9 +161,13 @@ RunTimeQuery="crun --rootless=true --root=/run/user/%U/ state %n.%u.%j.%s.%t"
 RunTimeKill="crun --rootless=true --root=/run/user/%U/ kill -a %n.%u.%j.%s.%t"
 RunTimeDelete="crun --rootless=true --root=/run/user/%U/ delete --force %n.%u.%j.%s.%t"
 RunTimeRun="crun --rootless=true --root=/run/user/%U/ run --bundle %b %n.%u.%j.%s.%t"
-</pre></li>
+</pre>
+</p>
 
-<li>oci.conf example for nvidia-container-runtime using create/start:
+<h3 id="nvidia_create_start">
+oci.conf example for nvidia-container-runtime using create/start:
+<a class="slurm_link" href="#nvidia_create_start"></a></h3>
+<p>
 <pre>
 EnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
 RunTimeEnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
@@ -162,9 +176,13 @@ RunTimeCreate="nvidia-container-runtime --rootless=true --root=/run/user/%U/ cre
 RunTimeStart="nvidia-container-runtime --rootless=true --root=/run/user/%U/ start %n.%u.%j.%s.%t"
 RunTimeKill="nvidia-container-runtime --rootless=true --root=/run/user/%U/ kill -a %n.%u.%j.%s.%t"
 RunTimeDelete="nvidia-container-runtime --rootless=true --root=/run/user/%U/ delete --force %n.%u.%j.%s.%t"
-</pre></li>
+</pre>
+</p>
 
-<li>oci.conf example for nvidia-container-runtime using run (suggested):
+<h3 id="nvidia_run">
+oci.conf example for nvidia-container-runtime using run (suggested):
+<a class="slurm_link" href="#nvidia_run"></a></h3>
+<p>
 <pre>
 EnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
 RunTimeEnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
@@ -172,9 +190,14 @@ RunTimeQuery="nvidia-container-runtime --rootless=true --root=/run/user/%U/ stat
 RunTimeKill="nvidia-container-runtime --rootless=true --root=/run/user/%U/ kill -a %n.%u.%j.%s.%t"
 RunTimeDelete="nvidia-container-runtime --rootless=true --root=/run/user/%U/ delete --force %n.%u.%j.%s.%t"
 RunTimeRun="nvidia-container-runtime --rootless=true --root=/run/user/%U/ run %n.%u.%j.%s.%t -b %b"
-</pre></li>
+</pre>
+</p>
 
-<li>oci.conf example for <a href="https://docs.sylabs.io/guides/4.0/admin-guide/installation.html">Singularity v4.0.2</a> using native runime:
+<h3 id="singularity_native">oci.conf example for
+<a href="https://docs.sylabs.io/guides/4.0/admin-guide/installation.html">
+Singularity v4.0.2</a> using native runtime:
+<a class="slurm_link" href="#singularity_native"></a></h3>
+<p>
 <pre>
 IgnoreFileConfigJson=true
 EnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
@@ -183,10 +206,13 @@ RunTimeRun="singularity exec --userns --sif-fuse %r %@"
 RunTimeKill="kill -s SIGTERM %p"
 RunTimeDelete="kill -s SIGKILL %p"
 </pre>
-</li>
+</p>
 
-<li>oci.conf example for <a href="https://docs.sylabs.io/guides/4.0/admin-guide/installation.html">Singularity v4.0.2</a> in OCI mode:
-<br>
+<h3 id="singularity_oci">oci.conf example for
+<a href="https://docs.sylabs.io/guides/4.0/admin-guide/installation.html">
+Singularity v4.0.2</a> in OCI mode:
+<a class="slurm_link" href="#singularity_oci"></a></h3>
+<p>
 Singularity v4.x requires setuid mode for OCI support.
 <pre>
 EnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
@@ -196,12 +222,15 @@ RunTimeRun="sudo singularity oci run --bundle %b %n.%u.%j.%s.%t"
 RunTimeKill="sudo singularity oci kill %n.%u.%j.%s.%t"
 RunTimeDelete="sudo singularity oci delete %n.%u.%j.%s.%t"
 </pre>
-<b>WARNING</b>: Singularity (v4.0.2) requires <i>sudo</i> for OCI support,
-which is a security risk since the user is able to modify these calls.
-This example is only provided for testing purposes.
-</li>
+</p>
 
-<li>oci.conf example for hpcng Singularity v3.8.0:
+<p><b>WARNING</b>: Singularity (v4.0.2) requires <i>sudo</i> for OCI support,
+which is a security risk since the user is able to modify these calls.
+This example is only provided for testing purposes.</p>
+
+<h3 id="singularity_hpcng">oci.conf example for hpcng Singularity v3.8.0:
+<a class="slurm_link" href="#singularity_hpcng"></a></h3>
+<p>
 <pre>
 EnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
 RunTimeEnvExclude="^(SLURM_CONF|SLURM_CONF_SERVER)="
@@ -211,13 +240,16 @@ OCIRunTimeStart="sudo singularity oci start %n.%u.%j.%s.%t"
 OCIRunTimeKill="sudo singularity oci kill %n.%u.%j.%s.%t"
 OCIRunTimeDelete="sudo singularity oci delete %n.%u.%j.%s.%t
 </pre>
-<b>WARNING</b>: Singularity (v3.8.0) requires <i>sudo</i> for OCI support,
-which is a security risk since the user is able to modify these calls.
-This example is only provided for testing purposes.
-</li>
+</p>
 
-<li>oci.conf example for
+<p><b>WARNING</b>: Singularity (v3.8.0) requires <i>sudo</i> for OCI support,
+which is a security risk since the user is able to modify these calls.
+This example is only provided for testing purposes.</p>
+
+<h3 id="charliecloud">oci.conf example for
 <a href="https://github.com/hpc/charliecloud">Charliecloud</a> (v0.30)
+<a class="slurm_link" href="#charliecloud"></a></h3>
+<p>
 <pre>
 IgnoreFileConfigJson=true
 CreateEnvFile=newline
@@ -227,10 +259,12 @@ RunTimeRun="env -i PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin/:
 RunTimeKill="kill -s SIGTERM %p"
 RunTimeDelete="kill -s SIGKILL %p"
 </pre>
-</li>
+</p>
 
-<li>oci.conf example for
+<h3 id="enroot">oci.conf example for
 <a href="https://github.com/NVIDIA/enroot">Enroot</a> (3.3.0)
+<a class="slurm_link" href="#enroot"></a></h3>
+<p>
 <pre>
 IgnoreFileConfigJson=true
 CreateEnvFile=newline
@@ -240,7 +274,9 @@ RunTimeRun="/usr/local/bin/enroot-start-wrapper %b %m %e -- %@"
 RunTimeKill="kill -s SIGINT %p"
 RunTimeDelete="kill -s SIGTERM %p"
 </pre>
-/usr/local/bin/enroot-start-wrapper:
+</p>
+
+<p>/usr/local/bin/enroot-start-wrapper:
 <pre>
 #!/bin/bash
 BUNDLE="$1"
@@ -281,8 +317,7 @@ rc=$?
 
 exit $rc
 </pre>
-</li>
-</ul>
+</p>
 
 <h2 id="testing">Testing OCI runtime outside of Slurm
 <a class="slurm_link" href="#testing"></a>
@@ -357,6 +392,15 @@ must be configured for site storage configuration.</li>
 <li><a href="https://docs.docker.com/engine/security/rootless/#exposing-privileged-ports">
 	Configure rootless dockerd to allow listening on privileged ports
 	</a></li>
+<li><a href="scrun.html#SECTION_Example-%3CB%3Escrun.lua%3C/B%3E-scripts">
+	scrun.lua</a> must be present on any node where scrun may be run. The
+	example should be sufficent for most environments but paths should be
+	modified to match available local storage.</li>
+<li><a href="oci.conf.html">oci.conf</a> must be present on any node where any
+	container job may be run. Example configurations for
+	<a href="https://slurm.schedmd.com/containers.html#example">
+	known OCI runtimes</a> are provided above. Examples may require
+	paths to be correct to installation locations.</li>
 </ol>
 <h3>Limitations</h3>
 <ol>
@@ -373,8 +417,18 @@ containers being run by Slurm.  Docker is only acting as a container image
 lifecycle manager. The containers will be executed remotely via Slurm following
 the existing security configuration in Slurm outside of unprivileged user
 control.</li>
-<li>All containers must use <a href="https://docs.docker.com/network/host/">
-host networking</a></li>
+<li>All containers must use the
+<a href="https://docs.docker.com/network/drivers/none/">"none" networking driver
+</a>. Attempting to use bridge, overlay, host, ipvlan, or macvlan can result in
+scrun being isolated from the network and not being able to communicate with
+the Slurm controller. The container is run by Slurm on the compute nodes which
+makes having Docker setup a network isolation layer ineffective for the
+container.</li>
+<li><pre>docker exec</pre> command is not supported.</li>
+<li><pre>docker compose</pre> command is not supported.</li>
+<li><pre>docker pause</pre> command is not supported.</li>
+<li><pre>docker unpause</pre> command is not supported.</li>
+<li><pre>docker swarm</pre> command is not supported.</li>
 </ol>
 
 <h3>Setup procedure</h3>
@@ -395,20 +449,25 @@ All commands following this will expect this environment variable to be set.</li
 </ul>
 Set the following fields to configure Docker:
 <pre>{
-  "default-runtime": "slurm",
-  "runtimes": {
-    "slurm": {
-      "path": "/usr/local/bin/scrun"
-    }
-  },
-  "experimental": true,
-  "iptables": false,
-  "bridge": "none",
-  "no-new-privileges": true,
-  "rootless": true,
-  "selinux-enabled": false,
+    "experimental": true,
+    "iptables": false,
+    "bridge": "none",
+    "no-new-privileges": true,
+    "rootless": true,
+    "selinux-enabled": false,
+    "default-runtime": "slurm",
+    "runtimes": {
+        "slurm": {
+            "path": "/usr/local/bin/scrun"
+        }
+    },
+    "data-root": "/run/user/${USER_ID}/docker/",
+    "exec-root": "/run/user/${USER_ID}/docker-exec/"
 }</pre>
-Correct path to scrun as if installation prefix was configured.</li>
+Correct path to scrun as if installation prefix was configured. Replace
+${USER_ID} with numeric user id or target a different directory with global
+write permissions and sticky bit. Rootless docker requires a different root
+directory than the system's default to avoid permission errors.</li>
 <li>It is strongly suggested that sites consider using inter-node shared
 filesystems to store Docker's containers. While it is possible to have a
 scrun.lua script to push and pull images for each deployment, there can be a
@@ -425,6 +484,24 @@ driver</a>:
 Any node expected to be able to run containers from Docker must have ability to
 atleast read the filesystem used. Full write privileges are suggested and will
 be required if changes to the container filesystem are desired.</li>
+
+<li>Configure dockerd to not setup network namespace, which will break scrun's
+	ability to talk to the Slurm controller.
+<!-- Docker does not document: --runtime= argument -->
+<ul>
+<li>To configure for all users:
+<pre>/etc/systemd/user/docker.service.d/override.conf</pre></li>
+<li>To configure per user:
+<pre>~/.config/systemd/user/docker.service.d/override.conf</pre></li>
+</ul>
+<pre>
+[Service]
+Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none"
+Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_NET=host"
+</pre>
+</li>
+<li>Reload docker's service unit in systemd:
+<pre>systemctl --user daemon-reload</pre></li>
 <li>Start rootless docker: <pre>systemctl --user start docker</pre></li>
 <li>Verify Docker is using scrun:
 <pre>export DOCKER_SECURITY="--security-opt label:disable --security-opt seccomp=unconfined  --security-opt apparmor=unconfined --net=none"
@@ -451,6 +528,17 @@ to run containers as jobs. No special user permissions are required and
 authentication.<pre>AuthType=auth/munge</pre></li>
 <li><a href="scrun.html">scrun.lua</a> must be configured for site storage
 configuration.</li>
+<li><a href="scrun.html#SECTION_Example-%3CB%3Escrun.lua%3C/B%3E-scripts">
+	scrun.lua</a> must be present on any node where scrun may be run. The
+	example should be sufficent for most environments but paths should be
+	modified to match available local storage.</li>
+<li><a href="oci.conf.html">oci.conf</a>
+	must be present on any node where any container job may be run.
+	Example configurations for
+	<a href="https://slurm.schedmd.com/containers.html#example">
+	known OCI runtimes</a> are provided above. Examples may require
+	paths to be correct to installation locations.</li>
+</ol>
 </ol>
 <h3>Limitations</h3>
 <ol>
@@ -458,6 +546,9 @@ configuration.</li>
 <li>All containers must use
 <a href="https://github.com/containers/podman/blob/main/docs/tutorials/basic_networking.md">
 host networking</a></li>
+<li><pre>podman exec</pre> command is not supported.</li>
+<li><pre>podman kube</pre> command is not supported.</li>
+<li><pre>podman pod</pre> command is not supported.</li>
 </ol>
 
 <h3>Setup procedure</h3>
@@ -533,6 +624,19 @@ salloc podman run --env-host=true alpine hostname
 salloc sh -c 'podman run -e SLURM_JOB_ID=$SLURM_JOB_ID alpine hostname'</pre>
 </li>
 </ol>
+
+<h3>Troubleshooting</h3>
+<ul>
+<li>Podman runs out of locks:
+<pre>$ podman run alpine uptime
+Error: allocating lock for new container: allocation failed; exceeded num_locks (2048)
+</pre>
+<ol>
+	<li>Try renumbering:<pre>podman system renumber</pre></li>
+	<li>Try reseting all storage:<pre>podman system reset</pre></li>
+</ol>
+</li>
+</ul>
 
 <h2 id="bundle">OCI Container bundle
 <a class="slurm_link" href="#bundle"></a>
@@ -842,6 +946,6 @@ Overview slides of Sarus are
 
 <hr size=4 width="100%">
 
-<p style="text-align:center;">Last modified 09 February 2024</p>
+<p style="text-align:center;">Last modified 19 March 2024</p>
 
 <!--#include virtual="footer.txt"-->

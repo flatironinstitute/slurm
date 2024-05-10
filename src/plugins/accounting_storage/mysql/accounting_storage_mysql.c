@@ -855,12 +855,15 @@ static int _as_mysql_acct_check_tables(mysql_conn_t *mysql_conn)
 
 		"end;"
 		"drop procedure if exists set_lineage;"
-		"create procedure set_lineage(in assoc_id_in int unsigned, in acct_in tinytext, in user_in tinytext, in my_table tinytext) "
+		"create procedure set_lineage(in assoc_id_in int unsigned, in acct_in tinytext, in user_in tinytext, in part_in tinytext, in my_table tinytext) "
 		"begin "
 		"set @lineage = '';"
 		"call get_lineage(acct_in, my_table, @lineage);"
 		"if user_in is not null && user_in!='' then "
 		"set @lineage = CONCAT(@lineage, '0-', user_in, '/');"
+		"if part_in is not null && part_in!='' then "
+		"set @lineage = CONCAT(@lineage, part_in, '/');"
+		"end if;"
 		"end if;"
 		"set @s = concat('update ', my_table, ' set mod_time=NOW(), lineage=@lineage where id_assoc=', assoc_id_in, ';');"
 		"prepare query from @s;"
@@ -2835,6 +2838,14 @@ static int _send_ctld_update(void *x, void *arg)
 	    (db_conn->conn->flags & PERSIST_FLAG_DONT_UPDATE_CLUSTER))
 		return 0;
 
+	slurm_mutex_lock(&db_conn->conn_send_lock);
+
+	if (!db_conn->conn_send) {
+		debug("slurmctld for cluster %s left at the moment we were about to send to it.", db_conn->conn->cluster_name);
+		slurm_mutex_unlock(&db_conn->conn_send_lock);
+		return 0;
+	}
+
 	/* This check can be removed 2 versions after 23.02 */
 	if (db_conn->conn_send) {
 		xassert(db_conn->conn_send);
@@ -2848,6 +2859,7 @@ static int _send_ctld_update(void *x, void *arg)
 			db_conn->conn->rem_port,
 			db_conn->conn->version);
 
+	slurm_mutex_unlock(&db_conn->conn_send_lock);
 	return 0;
 }
 
