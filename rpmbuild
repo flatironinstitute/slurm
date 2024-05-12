@@ -1,0 +1,6 @@
+#!/bin/bash -ex
+ver=$(awk '/^Version:/ { print $2 ; exit }' slurm.spec)
+git archive --prefix=slurm-$ver/ --format=tar HEAD | bzip2 > slurm-$ver.tar.bz2
+module purge
+module load cuda
+rpmbuild -ta slurm-$ver.tar.bz2
