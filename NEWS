@@ -1,6 +1,47 @@
 This file describes changes in recent versions of Slurm. It primarily
 documents those changes that are of interest to users and administrators.
 
+* Changes in Slurm 23.11.7
+==========================
+ -- slurmrestd - Correct OpenAPI specification for
+    'GET /slurm/v0.0.40/jobs/state' having response as null.
+ -- Allow running jobs on overlapping partitions if jobs don't specify -s.
+ -- Fix segfault when requesting a shared gres along with an exclusive
+    allocation.
+ -- Fix regression in 23.02 where afternotok and afterok dependencies were
+    rejected for federated jobs not running on the origin cluster of the
+    submitting job.
+ -- slurmctld - Disable job table locking while job state cache is active when
+    replying to `squeue --only-job-state` or `GET /slurm/v0.0.40/jobs/state`.
+ -- Fix sanity check when setting tres-per-task on the job allocation as well as
+    the step.
+ -- slurmrestd - Fix compatiblity with auth/slurm.
+ -- Fix issue where TRESRunMins gets off correct value if using
+    QOS UsageFactor != 1.
+ -- slurmrestd - Require `user` and `association_condition` fields to be
+    populated for requests to 'POST /slurmdb/v0.0.40/users_association'.
+ -- Avoid a slurmctld crash with extra_constraints enabled when a job requests
+    certain invalid --extra values.
+ -- `scancel --ctld` and `DELETE /slurm/v0.0/40/jobs` - Fix support for job
+    array expressions (e.g. 1_[3-5]). Also fix signaling a single pending array
+    task (e.g. 1_10), which previously signaled the whole array job instead.
+ -- Fix a possible slurmctld segfault when at some point we failed to create an
+    external launcher step.
+ -- Allow the slurmctld to open a connection to the slurmdbd if the first
+    attempt fails due to a protocol error.
+ -- mpi/cray_shasta - Fix launch for non-het-steps within a hetjob.
+ -- sacct - Fix "gpuutil" TRES usage output being incorrect when using --units.
+ -- Fix a rare deadlock on slurmctld shutdown or reconfigure.
+ -- Fix issue that only left one thread on each core available when "CPUs=" is
+    configured to total thread count on multi-threaded hardware and no other
+    topology info ("Sockets=", "CoresPerSocket", etc.) is configured.
+ -- Fix the external launcher step not being allocated a VNI when requested.
+ -- jobcomp/kafka - Fix payload length when producing and sending a message.
+ -- scrun - Avoid a crash if RunTimeDelete is called before the container
+    finishes.
+ -- Save the slurmd's cred_state while reconfiguring to prevent the loss job
+    credentials.
+
 * Changes in Slurm 23.11.6
 ==========================
  -- Avoid limiting sockets per node to one when using gres enforce-binding.

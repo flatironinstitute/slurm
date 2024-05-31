@@ -166,13 +166,20 @@ typedef struct {
 } node_inx_cnt_t;
 
 typedef struct {
-	list_t *array_leader_list;
+	slurm_selected_step_t *filter_id;
+	bool free_array_bitmap;
+	job_record_t *job_ptr;
+} array_task_filter_t;
+
+typedef struct {
+	list_t *array_leader_list; /* list of job_record_t */
+	list_t *pending_array_task_list; /* List of array_task_filter_t */
 	uid_t auth_uid;
 	bool filter_specific_job_ids;
 	kill_jobs_msg_t *kill_msg;
-	list_t *other_job_list;
+	time_t now;
+	list_t *other_job_list; /* list of job_record_t */
 	list_t *responses; /* List of kill_jobs_resp_job_t */
-	int response_error_code;
 } signal_jobs_args_t;
 
 typedef struct {
@@ -219,6 +226,10 @@ static bitstr_t *requeue_exit_hold = NULL;
 static bool     validate_cfgd_licenses = true;
 
 /* Local functions */
+static void _signal_pending_job_array_tasks(job_record_t *job_ptr, bitstr_t
+					    **array_bitmap, uint16_t signal,
+					    uid_t uid, int32_t i_last,
+					    time_t now, int *rc);
 static void _add_job_hash(job_record_t *job_ptr);
 static void _add_job_array_hash(job_record_t *job_ptr);
 static void _handle_requeue_limit(job_record_t *job_ptr, const char *caller);
@@ -265,7 +276,6 @@ static void _pack_default_job_details(job_record_t *job_ptr, buf_t *buffer,
 				      uint16_t protocol_version);
 static void _pack_pending_job_details(job_details_t *detail_ptr, buf_t *buffer,
 				      uint16_t protocol_version);
-static bool _parse_array_tok(char *tok, bitstr_t *array_bitmap, uint32_t max);
 static void _purge_missing_jobs(int node_inx, time_t now);
 static int  _read_data_array_from_file(int fd, char *file_name, char ***data,
 				       uint32_t *size, job_record_t *job_ptr);
@@ -3579,9 +3589,11 @@ static void _foreach_by_job_callback(job_record_t *job_ptr,
 	xassert(args->control == FOR_EACH_JOB_BY_ID_EACH_CONT);
 
 	if (args->ro_callback)
-		args->control = args->ro_callback(job_ptr, args->callback_arg);
+		args->control = args->ro_callback(job_ptr, args->filter,
+						  args->callback_arg);
 	else
-		args->control = args->callback(job_ptr, args->callback_arg);
+		args->control = args->callback(job_ptr, args->filter,
+					       args->callback_arg);
 
 	xassert(args->control > FOR_EACH_JOB_BY_ID_EACH_INVALID);
 	xassert(args->control < FOR_EACH_JOB_BY_ID_EACH_INVALID_MAX);
@@ -3733,6 +3745,97 @@ static void _foreach_job_by_id_array(for_each_by_job_id_args_t *args)
 	}
 }
 
+static void _find_array_expression_jobs(const slurm_selected_step_t *filter,
+					for_each_by_job_id_args_t *args,
+					list_t *match_job_list,
+					list_t *not_found_filters)
+{
+	int32_t i_first, i_last;
+	uint32_t job_id = filter->step_id.job_id;
+	bitstr_t *array_bitmap = filter->array_bitmap;
+	job_record_t *job_ptr;
+	job_record_t *meta_job = NULL;
+
+	i_first = bit_ffs(array_bitmap);
+	if (i_first >= 0)
+		i_last = bit_fls(array_bitmap);
+	else
+		i_last = -2;
+	for (int i = i_first; i <= i_last; i++) {
+		if (!bit_test(array_bitmap, i))
+			continue;
+		job_ptr = find_job_array_rec(job_id, i);
+		if (!job_ptr && !not_found_filters)
+			continue;
+		if (!job_ptr && not_found_filters) {
+			slurm_selected_step_t *not_found_filter =
+				xmalloc(sizeof(*not_found_filter));
+
+			memcpy(not_found_filter, filter, sizeof(*filter));
+			not_found_filter->array_task_id = i;
+			not_found_filter->array_bitmap = NULL;
+			list_append(not_found_filters, not_found_filter);
+			continue;
+		}
+		if (IS_JOB_PENDING(job_ptr) && job_ptr->array_recs) {
+			meta_job = job_ptr;
+			continue;
+		}
+		list_append(match_job_list, job_ptr);
+	}
+	if (meta_job)
+		list_append(match_job_list, meta_job);
+}
+
+static int _foreach_by_job_null_callback(void *x, void *arg)
+{
+	slurm_selected_step_t *filter = x;
+	for_each_by_job_id_args_t *args = arg;
+
+	/* Only call this if null_callback is set to avoid wasteful cycles */
+	xassert(args->null_callback);
+
+	args->control = args->null_callback(filter, args->callback_arg);
+
+	switch (args->control)
+	{
+	case FOR_EACH_JOB_BY_ID_EACH_STOP:
+	case FOR_EACH_JOB_BY_ID_EACH_CONT:
+		return SLURM_ERROR; /* Stop list_for_each */
+	case FOR_EACH_JOB_BY_ID_EACH_FAIL:
+		return SLURM_ERROR; /* Stop list_for_each */
+	case FOR_EACH_JOB_BY_ID_EACH_INVALID_MAX:
+	case FOR_EACH_JOB_BY_ID_EACH_INVALID:
+		fatal_abort("should never happen");
+	}
+	return SLURM_SUCCESS; /* Continue list_for_each */
+}
+
+static void _foreach_array_bitmap(const slurm_selected_step_t *filter,
+				  for_each_by_job_id_args_t *args)
+{
+	list_t *match_job_list = list_create(NULL); /* List of job_record_t */
+	list_t *not_found_filters = NULL; /* List of slurm_selected_step_t */
+
+	/*
+	 * Call the callback once per record that has been split off.
+	 * Then call it once for the meta record.
+	 */
+	if (args->null_callback)
+		not_found_filters = list_create(slurm_destroy_selected_step);
+	_find_array_expression_jobs(filter, args, match_job_list,
+				    not_found_filters);
+	if (list_count(not_found_filters))
+		(void) list_for_each(not_found_filters,
+				     _foreach_by_job_null_callback, args);
+	if (list_count(match_job_list))
+		(void) list_for_each(match_job_list, _foreach_job_by_id_single,
+				     args);
+
+	FREE_NULL_LIST(match_job_list);
+	FREE_NULL_LIST(not_found_filters);
+}
+
 static int _walk_jobs_by_selected_step(const slurm_selected_step_t *filter,
 				       for_each_by_job_id_args_t *args)
 {
@@ -3750,6 +3853,11 @@ static int _walk_jobs_by_selected_step(const slurm_selected_step_t *filter,
 
 	xassert(!((filter->array_task_id != NO_VAL) &&
 		  (filter->het_job_offset != NO_VAL)));
+
+	if (filter->array_bitmap) {
+		_foreach_array_bitmap(filter, args);
+		goto done;
+	}
 
 	if (filter->array_task_id != NO_VAL)
 		args->job_ptr = find_job_array_rec(filter->step_id.job_id,
@@ -6032,6 +6140,7 @@ static void _slurm_selected_step_init(job_record_t *job_ptr,
 {
 	xassert(job_ptr);
 
+	id->array_bitmap = NULL;
 	id->array_task_id = job_ptr->array_task_id;
 	if (job_ptr->array_task_id != NO_VAL)
 		id->step_id.job_id = job_ptr->array_job_id;
@@ -6331,32 +6440,75 @@ fini:
 	return matches_filter;
 }
 
-static int _foreach_filter_job_list(void *x, void *arg)
+static void _apply_signal_jobs_filter(job_record_t *job_ptr,
+				      slurm_selected_step_t *filter_id,
+				      signal_jobs_args_t *signal_args)
 {
-	job_record_t *job_ptr = x;
-	signal_jobs_args_t *signal_args = arg;
 	uid_t auth_uid = signal_args->auth_uid;
 
 	if (!_signal_job_matches_filter(job_ptr, signal_args))
-		return SLURM_SUCCESS;
+		return;
 
 	/* Verify that the user can kill the requested job */
 	if ((job_ptr->user_id != auth_uid) &&
 	    !validate_operator(auth_uid) &&
 	    !assoc_mgr_is_user_acct_coord(acct_db_conn, auth_uid,
 					  job_ptr->account, true)) {
+		slurm_selected_step_t *use_id;
 		slurm_selected_step_t id;
 
-		_slurm_selected_step_init(job_ptr, &id);
+		if (filter_id)
+			use_id = filter_id;
+		else {
+			_slurm_selected_step_init(job_ptr, &id);
+			use_id = &id;
+		}
 		_add_signal_job_resp(signal_args, NULL, ESLURM_ACCESS_DENIED,
-				     NULL, &id, job_ptr->job_id);
-		return SLURM_SUCCESS;
+				     NULL, use_id, job_ptr->job_id);
+		return;
 	}
 
-	if (job_ptr->array_recs)
+	if (filter_id && !filter_id->array_bitmap &&
+	    (filter_id->array_task_id != NO_VAL) &&
+	    IS_JOB_PENDING(job_ptr) && job_ptr->array_recs) {
+		/*
+		 * A pending job array task that has not been split from the
+		 * meta array record.
+		 */
+		array_task_filter_t *atf = xmalloc(sizeof(*atf));
+
+		/* Copy filter_id, but use a new array_bitmap */
+		atf->filter_id = xmalloc(sizeof(*atf->filter_id));
+		memcpy(atf->filter_id, filter_id, sizeof(*filter_id));
+
+		atf->filter_id->array_bitmap = bit_alloc(max_array_size);
+		bit_set(atf->filter_id->array_bitmap, filter_id->array_task_id);
+		atf->free_array_bitmap = true;
+		atf->job_ptr = job_ptr;
+
+		list_append(signal_args->pending_array_task_list, atf);
+	} else if (filter_id && filter_id->array_bitmap &&
+		   IS_JOB_PENDING(job_ptr) && job_ptr->array_recs) {
+		/* A job array expression with pending array tasks */
+		array_task_filter_t *atf = xmalloc(sizeof(*atf));
+
+		atf->filter_id = xmalloc(sizeof(*atf->filter_id));
+		memcpy(atf->filter_id, filter_id, sizeof(*filter_id));
+		atf->job_ptr = job_ptr;
+
+		list_append(signal_args->pending_array_task_list, atf);
+	} else if (job_ptr->array_recs)
 		list_append(signal_args->array_leader_list, job_ptr);
 	else
 		list_append(signal_args->other_job_list, job_ptr);
+}
+
+static int _foreach_filter_job_list(void *x, void *arg)
+{
+	job_record_t *job_ptr = x;
+	signal_jobs_args_t *signal_args = arg;
+
+	_apply_signal_jobs_filter(job_ptr, NULL, signal_args);
 
 	return SLURM_SUCCESS;
 }
@@ -6388,6 +6540,35 @@ static int _foreach_signal_job(void *x, void *arg)
 	return SLURM_SUCCESS;
 }
 
+static int _foreach_signal_job_array_tasks(void *x, void *arg)
+{
+	array_task_filter_t *atf = x;
+	signal_jobs_args_t *signal_args = arg;
+	kill_jobs_msg_t *kill_msg = signal_args->kill_msg;
+	int32_t i_last;
+	int error_code = SLURM_SUCCESS;
+
+	/*
+	 * _signal_pending_job_array_tasks()
+	 * Tasks that were split out are already being handled, so we do not
+	 * need to handle those.
+	 */
+	i_last = bit_fls(atf->filter_id->array_bitmap);
+	if (i_last >= 0)
+		_signal_pending_job_array_tasks(atf->job_ptr,
+						&atf->filter_id->array_bitmap,
+						kill_msg->signal,
+						signal_args->auth_uid,
+						i_last, signal_args->now,
+						&error_code);
+
+	if (error_code || (kill_msg->flags & KILL_JOBS_VERBOSE))
+		_add_signal_job_resp(signal_args, NULL, error_code, NULL,
+				     atf->filter_id, atf->job_ptr->job_id);
+
+	return 0;
+}
+
 static foreach_job_by_id_control_t _job_not_found(const slurm_selected_step_t
 						  	*id,
 						  void *arg)
@@ -6412,9 +6593,11 @@ static foreach_job_by_id_control_t _job_not_found(const slurm_selected_step_t
 	return FOR_EACH_JOB_BY_ID_EACH_CONT;
 }
 
-static foreach_job_by_id_control_t _filter_job(job_record_t *job_ptr, void *arg)
+static foreach_job_by_id_control_t _filter_job(job_record_t *job_ptr,
+					       const slurm_selected_step_t *id,
+					       void *arg)
 {
-	_foreach_filter_job_list(job_ptr, arg);
+	_apply_signal_jobs_filter(job_ptr, (slurm_selected_step_t *) id, arg);
 
 	return FOR_EACH_JOB_BY_ID_EACH_CONT;
 }
@@ -6773,6 +6956,116 @@ static bool _get_whole_hetjob(void)
 	return whole_hetjob;
 }
 
+static job_record_t *_find_meta_job_record(uint32_t job_id)
+{
+	job_record_t *job_ptr;
+
+	job_ptr = find_job_record(job_id);
+	if (job_ptr == NULL) {
+		job_ptr = job_array_hash_j[JOB_HASH_INX(job_id)];
+		while (job_ptr) {
+			if (job_ptr->array_job_id == job_id)
+				break;
+			job_ptr = job_ptr->job_array_next_j;
+		}
+	}
+	if ((job_ptr == NULL) ||
+	    ((job_ptr->array_task_id == NO_VAL) &&
+	     (job_ptr->array_recs == NULL)))
+		return NULL;
+
+	return job_ptr;
+}
+
+static void _signal_pending_job_array_tasks(job_record_t *job_ptr,
+					    bitstr_t **array_bitmap,
+					    uint16_t signal,
+					    uid_t uid,
+					    int32_t i_last,
+					    time_t now,
+					    int *rc)
+{
+	int len;
+
+	xassert(job_ptr);
+
+	if (!(IS_JOB_PENDING(job_ptr) && job_ptr->array_recs &&
+	      job_ptr->array_recs->task_id_bitmap))
+		return; /* No tasks to signal */
+
+	/* Ensure bitmap sizes match for AND operations */
+	len = bit_size(job_ptr->array_recs->task_id_bitmap);
+	i_last++;
+	if (i_last < len) {
+		bit_realloc(*array_bitmap, len);
+	} else {
+		bit_realloc(*array_bitmap, i_last);
+		bit_realloc(job_ptr->array_recs->task_id_bitmap, i_last);
+	}
+	if (signal == SIGKILL) {
+		uint32_t orig_task_cnt, new_task_count;
+		/* task_id_bitmap changes, so we need a copy of it */
+		bitstr_t *task_id_bitmap_orig =
+			bit_copy(job_ptr->array_recs->task_id_bitmap);
+
+		bit_and_not(job_ptr->array_recs->task_id_bitmap,
+			    *array_bitmap);
+		xfree(job_ptr->array_recs->task_id_str);
+		orig_task_cnt = job_ptr->array_recs->task_cnt;
+		new_task_count = bit_set_count(job_ptr->array_recs->
+					       task_id_bitmap);
+		if (!new_task_count) {
+			last_job_update		= now;
+			job_state_set(job_ptr, JOB_CANCELLED);
+			job_ptr->start_time	= now;
+			job_ptr->end_time	= now;
+			job_ptr->requid		= uid;
+			srun_allocate_abort(job_ptr);
+			job_completion_logger(job_ptr, false);
+			/*
+			 * Master job record, even wihtout tasks,
+			 * counts as one job record
+			 */
+			job_count -= (orig_task_cnt - 1);
+		} else {
+			_job_array_comp(job_ptr, false, false);
+			job_count -= (orig_task_cnt - new_task_count);
+			/*
+			 * Since we are altering the job array's
+			 * task_cnt we must go alter this count in the
+			 * acct_policy code as if they are finishing
+			 * (accrue_cnt/job_submit etc...).
+			 */
+			if (job_ptr->array_recs->task_cnt >
+			    new_task_count) {
+				uint32_t tmp_state = job_ptr->job_state;
+				job_state_set(job_ptr, JOB_CANCELLED);
+
+				job_ptr->array_recs->task_cnt -=
+					new_task_count;
+				acct_policy_remove_job_submit(job_ptr,
+							      false);
+				job_ptr->bit_flags &= ~JOB_ACCRUE_OVER;
+				job_state_set(job_ptr, tmp_state);
+			}
+		}
+
+		/*
+		 * Set the task_cnt here since
+		 * job_completion_logger needs the total
+		 * pending count to handle the acct_policy
+		 * limit for submitted jobs correctly.
+		 */
+		job_ptr->array_recs->task_cnt = new_task_count;
+		bit_and_not(*array_bitmap, task_id_bitmap_orig);
+		FREE_NULL_BITMAP(task_id_bitmap_orig);
+	} else {
+		bit_and_not(*array_bitmap,
+			    job_ptr->array_recs->task_id_bitmap);
+		*rc = ESLURM_TRANSITION_STATE_NO_UPDATE;
+	}
+}
+
 /*
  * job_str_signal - signal the specified job
  * IN job_id_str - id of the job to be signaled, valid formats include "#"
@@ -6789,12 +7082,11 @@ extern int job_str_signal(char *job_id_str, uint16_t signal, uint16_t flags,
 	job_record_t *job_ptr;
 	uint32_t job_id;
 	time_t now = time(NULL);
-	char *end_ptr = NULL, *tok, *tmp;
+	char *end_ptr = NULL;
 	long int long_id;
 	bitstr_t *array_bitmap = NULL;
-	bool valid = true;
 	int32_t i, i_first, i_last;
-	int rc = SLURM_SUCCESS, rc2, len;
+	int rc = SLURM_SUCCESS, rc2;
 
 	if (max_array_size == NO_VAL) {
 		max_array_size = slurm_conf.max_array_sz;
@@ -6963,39 +7255,16 @@ extern int job_str_signal(char *job_id_str, uint16_t signal, uint16_t flags,
 
 	}
 
-	array_bitmap = bit_alloc(max_array_size);
-	tmp = xstrdup(end_ptr + 1);
-	tok = strtok_r(tmp, ",", &end_ptr);
-	while (tok && valid) {
-		valid = _parse_array_tok(tok, array_bitmap,
-					 max_array_size);
-		tok = strtok_r(NULL, ",", &end_ptr);
-	}
-	xfree(tmp);
-	if (valid) {
-		i_last = bit_fls(array_bitmap);
-		if (i_last < 0)
-			valid = false;
-	}
-	if (!valid) {
+	array_bitmap = slurm_array_str2bitmap(end_ptr + 1, max_array_size,
+					      &i_last);
+	if (!array_bitmap) {
 		info("%s(4): invalid JobId=%s", __func__, job_id_str);
 		rc = ESLURM_INVALID_JOB_ID;
 		goto endit;
 	}
 
 	/* Find some job record and validate the user signaling the job */
-	job_ptr = find_job_record(job_id);
-	if (job_ptr == NULL) {
-		job_ptr = job_array_hash_j[JOB_HASH_INX(job_id)];
-		while (job_ptr) {
-			if (job_ptr->array_job_id == job_id)
-				break;
-			job_ptr = job_ptr->job_array_next_j;
-		}
-	}
-	if ((job_ptr == NULL) ||
-	    ((job_ptr->array_task_id == NO_VAL) &&
-	     (job_ptr->array_recs == NULL))) {
+	if (!(job_ptr = _find_meta_job_record(job_id))) {
 		info("%s(5): invalid JobId=%s", __func__, job_id_str);
 		rc = ESLURM_INVALID_JOB_ID;
 		goto endit;
@@ -7010,81 +7279,8 @@ extern int job_str_signal(char *job_id_str, uint16_t signal, uint16_t flags,
 		goto endit;
 	}
 
-	if (IS_JOB_PENDING(job_ptr) &&
-	    job_ptr->array_recs && job_ptr->array_recs->task_id_bitmap) {
-		/* Ensure bitmap sizes match for AND operations */
-		len = bit_size(job_ptr->array_recs->task_id_bitmap);
-		i_last++;
-		if (i_last < len) {
-			bit_realloc(array_bitmap, len);
-		} else {
-			bit_realloc(array_bitmap, i_last);
-			bit_realloc(job_ptr->array_recs->task_id_bitmap,
-				    i_last);
-		}
-		if (signal == SIGKILL) {
-			uint32_t orig_task_cnt, new_task_count;
-			/* task_id_bitmap changes, so we need a copy of it */
-			bitstr_t *task_id_bitmap_orig =
-				bit_copy(job_ptr->array_recs->task_id_bitmap);
-
-			bit_and_not(job_ptr->array_recs->task_id_bitmap,
-				    array_bitmap);
-			xfree(job_ptr->array_recs->task_id_str);
-			orig_task_cnt = job_ptr->array_recs->task_cnt;
-			new_task_count = bit_set_count(job_ptr->array_recs->
-						       task_id_bitmap);
-			if (!new_task_count) {
-				last_job_update		= now;
-				job_state_set(job_ptr, JOB_CANCELLED);
-				job_ptr->start_time	= now;
-				job_ptr->end_time	= now;
-				job_ptr->requid		= uid;
-				srun_allocate_abort(job_ptr);
-				job_completion_logger(job_ptr, false);
-				/*
-				 * Master job record, even wihtout tasks,
-				 * counts as one job record
-				 */
-				job_count -= (orig_task_cnt - 1);
-			} else {
-				_job_array_comp(job_ptr, false, false);
-				job_count -= (orig_task_cnt - new_task_count);
-				/*
-				 * Since we are altering the job array's
-				 * task_cnt we must go alter this count in the
-				 * acct_policy code as if they are finishing
-				 * (accrue_cnt/job_submit etc...).
-				 */
-				if (job_ptr->array_recs->task_cnt >
-				    new_task_count) {
-					uint32_t tmp_state = job_ptr->job_state;
-					job_state_set(job_ptr, JOB_CANCELLED);
-
-					job_ptr->array_recs->task_cnt -=
-						new_task_count;
-					acct_policy_remove_job_submit(job_ptr,
-								      false);
-					job_ptr->bit_flags &= ~JOB_ACCRUE_OVER;
-					job_state_set(job_ptr, tmp_state);
-				}
-			}
-
-			/*
-			 * Set the task_cnt here since
-			 * job_completion_logger needs the total
-			 * pending count to handle the acct_policy
-			 * limit for submitted jobs correctly.
-			 */
-			job_ptr->array_recs->task_cnt = new_task_count;
-			bit_and_not(array_bitmap, task_id_bitmap_orig);
-			FREE_NULL_BITMAP(task_id_bitmap_orig);
-		} else {
-			bit_and_not(array_bitmap,
-				    job_ptr->array_recs->task_id_bitmap);
-			rc = ESLURM_TRANSITION_STATE_NO_UPDATE;
-		}
-	}
+	_signal_pending_job_array_tasks(job_ptr, &array_bitmap, signal, uid,
+					i_last, now, &rc);
 
 	i_first = bit_ffs(array_bitmap);
 	if (i_first >= 0)
@@ -7122,6 +7318,24 @@ static void _free_selected_step_array(slurm_selected_step_t ***jobs_p,
 	*jobs_p = NULL;
 }
 
+static void _free_array_task_filter(void *x)
+{
+	array_task_filter_t *rec = x;
+
+	if (!rec)
+		return;
+
+	/*
+	 * Do not use slurm_destroy_selected_step() as that will
+	 * unconditionally free the bitmap.
+	 */
+	if (rec->free_array_bitmap)
+		FREE_NULL_BITMAP(rec->filter_id->array_bitmap);
+	xfree(rec->filter_id);
+	/* Do not free rec->job_ptr */
+	xfree(rec);
+}
+
 static int _parse_jobs_array(char **jobs_array, uint32_t jobs_cnt,
 			     slurm_selected_step_t ***jobs_p)
 {
@@ -7129,13 +7343,16 @@ static int _parse_jobs_array(char **jobs_array, uint32_t jobs_cnt,
 
 	if (!jobs_array)
 		return SLURM_SUCCESS;
+	if (max_array_size == NO_VAL)
+		max_array_size = slurm_conf.max_array_sz;
 
 	jobs = xcalloc(jobs_cnt, sizeof(*jobs));
 	for (int i = 0; i < jobs_cnt; i++) {
 		int rc;
 
 		jobs[i] = xmalloc(sizeof(*jobs[i]));
-		rc = unfmt_job_id_string(jobs_array[i], jobs[i]);
+		rc = unfmt_job_id_string(jobs_array[i], jobs[i],
+					 max_array_size);
 		if (rc != SLURM_SUCCESS) {
 			_free_selected_step_array(&jobs, i + 1);
 			return rc;
@@ -7193,7 +7410,12 @@ extern int job_mgr_signal_jobs(kill_jobs_msg_t *kill_msg, uid_t auth_uid,
 				       kill_msg->jobs_cnt, &jobs);
 		if (rc != SLURM_SUCCESS)
 			return rc;
+		signal_args.pending_array_task_list =
+			list_create(_free_array_task_filter);
 	}
+
+	if (max_array_size == NO_VAL)
+		max_array_size = slurm_conf.max_array_sz;
 
 	/*
 	 * Get a list of jobs to signal first, then signal the jobs outside of
@@ -7215,6 +7437,11 @@ extern int job_mgr_signal_jobs(kill_jobs_msg_t *kill_msg, uid_t auth_uid,
 
 	list_for_each(signal_args.array_leader_list, _foreach_signal_job,
 		      &signal_args);
+	if (signal_args.pending_array_task_list) {
+		signal_args.now = time(NULL);
+		list_for_each(signal_args.pending_array_task_list,
+			      _foreach_signal_job_array_tasks, &signal_args);
+	}
 	list_for_each(signal_args.other_job_list, _foreach_signal_job,
 		      &signal_args);
 
@@ -7223,6 +7450,7 @@ extern int job_mgr_signal_jobs(kill_jobs_msg_t *kill_msg, uid_t auth_uid,
 	/* Cleanup */
 	_free_selected_step_array(&jobs, kill_msg->jobs_cnt);
 	FREE_NULL_LIST(signal_args.array_leader_list);
+	FREE_NULL_LIST(signal_args.pending_array_task_list);
 	FREE_NULL_LIST(signal_args.other_job_list);
 	FREE_NULL_LIST(signal_args.responses);
 
@@ -8837,53 +9065,6 @@ static int _test_strlen(char *test_str, char *str_name, int max_str_len)
 	return SLURM_SUCCESS;
 }
 
-/* For each token in a comma delimited job array expression set the matching
- * bitmap entry */
-static bool _parse_array_tok(char *tok, bitstr_t *array_bitmap, uint32_t max)
-{
-	char *end_ptr = NULL;
-	long int i, first, last, step = 1;
-
-	if (tok[0] == '[')	/* Strip leading "[" */
-		tok++;
-	first = strtol(tok, &end_ptr, 10);
-	if (end_ptr[0] == ']')	/* Strip trailing "]" */
-		end_ptr++;
-	if (first < 0)
-		return false;
-	if (end_ptr[0] == '-') {
-		last = strtol(end_ptr + 1, &end_ptr, 10);
-		if (end_ptr[0] == ']')	/* Strip trailing "]" */
-			end_ptr++;
-		if (end_ptr[0] == ':') {
-			step = strtol(end_ptr + 1, &end_ptr, 10);
-			if (end_ptr[0] == ']')	/* Strip trailing "]" */
-				end_ptr++;
-			if ((end_ptr[0] != '\0') && (end_ptr[0] != '%'))
-				return false;
-			if ((step <= 0) || (step >= max))
-				return false;
-		} else if ((end_ptr[0] != '\0') && (end_ptr[0] != '%')) {
-			return false;
-		}
-		if (last < first)
-			return false;
-	} else if ((end_ptr[0] != '\0') && (end_ptr[0] != '%')) {
-		return false;
-	} else {
-		last = first;
-	}
-
-	if (last >= max)
-		return false;
-
-	for (i = first; i <= last; i += step) {
-		bit_set(array_bitmap, i);
-	}
-
-	return true;
-}
-
 /* Translate a job array expression into the equivalent bitmap */
 static bool _valid_array_inx(job_desc_msg_t *job_desc)
 {
@@ -8925,8 +9106,8 @@ static bool _valid_array_inx(job_desc_msg_t *job_desc)
 	tmp = xstrdup(job_desc->array_inx);
 	tok = strtok_r(tmp, ",", &last);
 	while (tok && valid) {
-		valid = _parse_array_tok(tok, job_desc->array_bitmap,
-					 max_array_size);
+		valid = slurm_parse_array_tok(tok, job_desc->array_bitmap,
+					      max_array_size);
 		tok = strtok_r(NULL, ",", &last);
 	}
 	xfree(tmp);
@@ -16052,10 +16233,9 @@ extern int update_job_str(slurm_msg_t *msg, uid_t uid)
 	long int long_id;
 	uint32_t job_id = 0, het_job_offset;
 	bitstr_t *array_bitmap = NULL, *tmp_bitmap;
-	bool valid = true;
 	int32_t i, i_first, i_last;
 	int len, rc = SLURM_SUCCESS, rc2;
-	char *end_ptr, *tok, *tmp = NULL;
+	char *end_ptr, *tmp = NULL;
 	char *job_id_str;
 	char *err_msg = NULL;
 	resp_array_struct_t *resp_array = NULL;
@@ -16181,21 +16361,9 @@ extern int update_job_str(slurm_msg_t *msg, uid_t uid)
 		goto reply;
 	}
 
-	array_bitmap = bit_alloc(max_array_size);
-	tmp = xstrdup(end_ptr + 1);
-	tok = strtok_r(tmp, ",", &end_ptr);
-	while (tok && valid) {
-		valid = _parse_array_tok(tok, array_bitmap,
-					 max_array_size);
-		tok = strtok_r(NULL, ",", &end_ptr);
-	}
-	xfree(tmp);
-	if (valid) {
-		i_last = bit_fls(array_bitmap);
-		if (i_last < 0)
-			valid = false;
-	}
-	if (!valid) {
+	array_bitmap = slurm_array_str2bitmap(end_ptr + 1, max_array_size,
+					      &i_last);
+	if (!array_bitmap) {
 		info("%s: invalid JobId=%s", __func__, job_id_str);
 		rc = ESLURM_INVALID_JOB_ID;
 		goto reply;
@@ -18337,9 +18505,8 @@ extern int job_suspend2(suspend_msg_t *sus_ptr, uid_t uid,
 	job_record_t *job_ptr = NULL;
 	long int long_id;
 	uint32_t job_id = 0;
-	char *end_ptr = NULL, *tok, *tmp;
+	char *end_ptr = NULL;
 	bitstr_t *array_bitmap = NULL;
-	bool valid = true;
 	slurm_msg_t resp_msg;
 	return_code_msg_t rc_msg;
 	resp_array_struct_t *resp_array = NULL;
@@ -18408,20 +18575,9 @@ extern int job_suspend2(suspend_msg_t *sus_ptr, uid_t uid,
 		goto reply;
 	}
 
-	array_bitmap = bit_alloc(max_array_size);
-	tmp = xstrdup(end_ptr + 1);
-	tok = strtok_r(tmp, ",", &end_ptr);
-	while (tok && valid) {
-		valid = _parse_array_tok(tok, array_bitmap,
-					 max_array_size);
-		tok = strtok_r(NULL, ",", &end_ptr);
-	}
-	xfree(tmp);
-	if (valid) {
-		if (bit_fls(array_bitmap) < 0)
-			valid = false;
-	}
-	if (!valid) {
+	array_bitmap = slurm_array_str2bitmap(end_ptr + 1, max_array_size,
+					      NULL);
+	if (!array_bitmap) {
 		info("%s: invalid JobId=%s", __func__, sus_ptr->job_id_str);
 		rc = ESLURM_INVALID_JOB_ID;
 		goto reply;
@@ -18822,9 +18978,8 @@ extern int job_requeue2(uid_t uid, requeue_msg_t *req_ptr, slurm_msg_t *msg,
 	job_record_t *job_ptr = NULL;
 	long int long_id;
 	uint32_t job_id = 0;
-	char *end_ptr = NULL, *tok, *tmp;
+	char *end_ptr = NULL;
 	bitstr_t *array_bitmap = NULL;
-	bool valid = true;
 	uint32_t flags = req_ptr->flags;
 	char *job_id_str = req_ptr->job_id_str;
 	resp_array_struct_t *resp_array = NULL;
@@ -18883,20 +19038,9 @@ extern int job_requeue2(uid_t uid, requeue_msg_t *req_ptr, slurm_msg_t *msg,
 		goto reply;
 	}
 
-	array_bitmap = bit_alloc(max_array_size);
-	tmp = xstrdup(end_ptr + 1);
-	tok = strtok_r(tmp, ",", &end_ptr);
-	while (tok && valid) {
-		valid = _parse_array_tok(tok, array_bitmap,
-					 max_array_size);
-		tok = strtok_r(NULL, ",", &end_ptr);
-	}
-	xfree(tmp);
-	if (valid) {
-		if (bit_fls(array_bitmap) < 0)
-			valid = false;
-	}
-	if (!valid) {
+	array_bitmap = slurm_array_str2bitmap(end_ptr + 1, max_array_size,
+					      NULL);
+	if (!array_bitmap) {
 		info("%s: invalid JobId=%s", __func__, job_id_str);
 		rc = ESLURM_INVALID_JOB_ID;
 		goto reply;

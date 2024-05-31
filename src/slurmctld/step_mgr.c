@@ -3178,6 +3178,31 @@ static int _test_step_desc_fields(job_step_create_request_msg_t *step_specs)
 	return SLURM_SUCCESS;
 }
 
+static int _switch_setup(job_record_t *job_ptr, step_record_t *step_ptr,
+			 uint32_t jobid)
+{
+	xassert(job_ptr);
+	xassert(step_ptr);
+
+	if (!step_ptr->step_layout)
+		return SLURM_SUCCESS;
+
+	if (switch_g_alloc_jobinfo(&step_ptr->switch_job,
+				   jobid,
+				   step_ptr->step_id.step_id) < 0)
+		fatal("%s: switch_g_alloc_jobinfo error", __func__);
+
+	errno = 0;
+	if (switch_g_build_jobinfo(step_ptr->switch_job,
+				   step_ptr->step_layout,
+				   step_ptr) < 0) {
+		if (errno == ESLURM_INTERCONNECT_BUSY)
+			return errno;
+		return ESLURM_INTERCONNECT_FAILURE;
+	}
+	return SLURM_SUCCESS;
+}
+
 extern int step_create(job_step_create_request_msg_t *step_specs,
 		       step_record_t** new_step_record,
 		       uint16_t protocol_version, char **err_msg)
@@ -3731,21 +3756,9 @@ extern int step_create(job_step_create_request_msg_t *step_specs,
 	jobid = job_ptr->job_id;
 #endif
 
-	if (step_layout) {
-		if (switch_g_alloc_jobinfo(&step_ptr->switch_job,
-					   jobid,
-					   step_ptr->step_id.step_id) < 0)
-			fatal("%s: switch_g_alloc_jobinfo error", __func__);
-
-		if (switch_g_build_jobinfo(step_ptr->switch_job,
-					   step_layout, step_ptr) < 0) {
-			delete_step_record(job_ptr, step_ptr);
-			if (tmp_step_layout_used)
-				xfree(step_layout->node_list);
-			if (errno == ESLURM_INTERCONNECT_BUSY)
-				return errno;
-			return ESLURM_INTERCONNECT_FAILURE;
-		}
+	if ((ret_code = _switch_setup(job_ptr, step_ptr, jobid))) {
+		delete_step_record(job_ptr, step_ptr);
+		return ret_code;
 	}
 
 	if (tmp_step_layout_used)
@@ -6017,14 +6030,6 @@ static int _build_ext_launcher_step(step_record_t **step_rec,
 	if (!step_rec)
 		return SLURM_ERROR;
 
-	step_ptr = *step_rec = _create_step_record(job_ptr, protocol_version);
-
-	if (!step_ptr) {
-		error("%s: Can't create step_record! This should never happen",
-		      __func__);
-		return SLURM_ERROR;
-	}
-
 	if (job_ptr->next_step_id >= slurm_conf.max_step_cnt)
 		return SLURM_ERROR;
 
@@ -6071,6 +6076,15 @@ static int _build_ext_launcher_step(step_record_t **step_rec,
 	log_flag(STEPS, "Picked nodes %s when accumulating from %s",
 		 step_node_list, step_specs->node_list);
 
+	step_ptr = *step_rec = _create_step_record(job_ptr, protocol_version);
+
+	if (!step_ptr) {
+		error("%s: Can't create step_record! This should never happen",
+		      __func__);
+		select_g_select_jobinfo_free(select_jobinfo);
+		return SLURM_ERROR;
+	}
+
 	/* We want 1 task per node. */
 	step_ptr->step_node_bitmap = nodeset;
 	node_count = bit_set_count(nodeset);
@@ -6084,6 +6098,7 @@ static int _build_ext_launcher_step(step_record_t **step_rec,
 
 	if (!step_ptr->step_layout) {
 		select_g_select_jobinfo_free(select_jobinfo);
+		delete_step_record(job_ptr, step_ptr);
 		return SLURM_ERROR;
 	}
 
@@ -6129,6 +6144,11 @@ static int _build_ext_launcher_step(step_record_t **step_rec,
 
 	step_set_alloc_tres(step_ptr, 1, false, false);
 	jobacct_storage_g_step_start(acct_db_conn, step_ptr);
+
+	if ((rc = _switch_setup(job_ptr, step_ptr, job_ptr->job_id))) {
+		delete_step_record(job_ptr, step_ptr);
+		return rc;
+	}
 
 	return SLURM_SUCCESS;
 }

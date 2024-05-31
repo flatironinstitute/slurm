@@ -372,6 +372,7 @@ static bitstr_t *_job_state_array_bitmap(const job_record_t *job_ptr)
 }
 
 static foreach_job_by_id_control_t _foreach_job(const job_record_t *job_ptr,
+						const slurm_selected_step_t *id,
 						void *arg)
 {
 	job_state_args_t *args = arg;
@@ -400,7 +401,6 @@ static void _dump_job_state_locked(job_state_args_t *args,
 				   const uint32_t filter_jobs_count,
 				   const slurm_selected_step_t *filter_jobs_ptr)
 {
-
 	xassert(verify_lock(JOB_LOCK, READ_LOCK));
 	xassert(args->magic == MAGIC_JOB_STATE_ARGS);
 
@@ -634,6 +634,7 @@ extern int dump_job_state(const uint32_t filter_jobs_count,
 			  uint32_t *jobs_count_ptr,
 			  job_state_response_job_t **jobs_pptr)
 {
+	slurmctld_lock_t job_read_lock = { .job = READ_LOCK };
 	job_state_args_t args = {
 		.magic = MAGIC_JOB_STATE_ARGS,
 		.count_only = true,
@@ -644,6 +645,9 @@ extern int dump_job_state(const uint32_t filter_jobs_count,
 	 * an invalid cached state here is very minor.
 	 */
 	bool use_cache = cache_table;
+
+	if (!use_cache)
+		lock_slurmctld(job_read_lock);
 
 	/*
 	 * Loop once to grab the job count and then allocate the job array and
@@ -658,8 +662,10 @@ extern int dump_job_state(const uint32_t filter_jobs_count,
 				       filter_jobs_ptr);
 
 	if (args.count > 0) {
-		if (!try_xrecalloc(args.jobs, args.count, sizeof(*args.jobs)))
-			return ENOMEM;
+		if (!try_xrecalloc(args.jobs, args.count, sizeof(*args.jobs))) {
+			args.rc = ENOMEM;
+			goto cleanup;
+		}
 
 		/* reset count */
 		args.count_only = false;
@@ -675,6 +681,10 @@ extern int dump_job_state(const uint32_t filter_jobs_count,
 
 	*jobs_pptr = args.jobs;
 	*jobs_count_ptr = args.count;
+cleanup:
+	if (!use_cache)
+		unlock_slurmctld(job_read_lock);
+
 	return args.rc;
 }
 

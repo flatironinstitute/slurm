@@ -4300,7 +4300,7 @@ static int DUMP_FUNC(JOB_ARRAY_RESPONSE_MSG)(const parser_t *const parser,
 		entry->msg = msg->err_msg[i];
 
 		if ((rc = unfmt_job_id_string(msg->job_array_id[i],
-					      &entry->step))) {
+					      &entry->step, NO_VAL))) {
 			on_warn(DUMPING, parser->type, args,
 				"unfmt_job_id_string()", __func__,
 				"Unable to parse JobId=%s: %s",
@@ -4970,7 +4970,7 @@ static int PARSE_FUNC(SELECTED_STEP)(const parser_t *const parser, void *obj,
 				   "Expecting string but got %s",
 				   data_get_type_string(src));
 
-	return unfmt_job_id_string(data_get_string(src), step);
+	return unfmt_job_id_string(data_get_string(src), step, NO_VAL);
 }
 
 static int DUMP_FUNC(SELECTED_STEP)(const parser_t *const parser, void *obj,
@@ -8884,16 +8884,16 @@ static const parser_t PARSER_ARRAY(OPENAPI_ACCOUNTS_ADD_COND_RESP)[] = {
 };
 #undef add_parse
 
-#define add_parse(mtype, field, path, desc) \
-	add_parser(openapi_resp_users_add_cond_t, mtype, false, field, 0, path, desc)
+#define add_parse_req(mtype, field, path, desc) \
+	add_parser(openapi_resp_users_add_cond_t, mtype, true, field, 0, path, desc)
 static const parser_t PARSER_ARRAY(OPENAPI_USERS_ADD_COND_RESP)[] = {
-	add_parse(USERS_ADD_COND_PTR, add_assoc, "association_condition", "Filters to select associations for users"),
-	add_parse(USER_SHORT_PTR, user, "user", "Admin level of user, DefaultAccount, DefaultWCKey"),
+	add_parse_req(USERS_ADD_COND_PTR, add_assoc, "association_condition", "Filters to select associations for users"),
+	add_parse_req(USER_SHORT_PTR, user, "user", "Admin level of user, DefaultAccount, DefaultWCKey"),
 	add_openapi_response_meta(openapi_resp_users_add_cond_t),
 	add_openapi_response_errors(openapi_resp_users_add_cond_t),
 	add_openapi_response_warnings(openapi_resp_users_add_cond_t),
 };
-#undef add_parse
+#undef add_parse_req
 
 #define add_parse(mtype, field, path, desc) \
 	add_parser(openapi_resp_job_state_t, mtype, false, field, 0, path, desc)
