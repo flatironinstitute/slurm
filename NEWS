@@ -1,6 +1,42 @@
 This file describes changes in recent versions of Slurm. It primarily
 documents those changes that are of interest to users and administrators.
 
+* Changes in Slurm 23.11.8
+==========================
+ -- Fix slurmctld crash when reconfiguring with a PrologSlurmctld is running.
+ -- Fix slurmctld crash after a job has been resized.
+ -- Fix slurmctld and slurmdbd potentially stopping instead of performing a
+    logrotate when recieving SIGUSR2 when using auth/slurm.
+ -- Fix not having a disabled value for keepalive CommunicationParameters in
+    slurm.conf when these parameters are not set. This can log an error when
+    setting a socket, for example during slurmdbd registration with ctld.
+ -- switch/hpe_slingshot - Fix slurmctld crash when upgrading from 23.02.
+ -- Fix "Could not find group" errors from validate_group() when using
+    AllowGroups with large /etc/group files.
+ -- slurmrestd - Prevent a slurmrestd segfault when parsing the crontab field,
+    which was never usable. Now it explicitly ignores the value and emits a
+    warning if it is used for the following endpoints:
+      'POST /slurm/v0.0.39/job/{job_id}'
+      'POST /slurm/v0.0.39/job/submit'
+      'POST /slurm/v0.0.40/job/{job_id}'
+      'POST /slurm/v0.0.40/job/submit'
+ -- Fix getting user environment when using sbatch with "--get-user-env" or
+    "--export=" when there is a user profile script that reads /proc.
+ -- Prevent slurmd from crashing if acct_gather_energy/gpu is configured but
+    GresTypes is not configured.
+ -- Do not log the following errors when AcctGatherEnergyType plugins are used
+    but a node does not have or cannot find sensors:
+    "error: _get_joules_task: can't get info from slurmd"
+    "error: slurm_get_node_energy: Zero Bytes were transmitted or received"
+    However, the following error will continue to be logged:
+    "error: Can't get energy data. No power sensors are available. Try later"
+ -- Fix cloud nodes not being able to forward to nodes that restarted with new
+    IP addresses.
+ -- sacct - Fix printing of job group for job steps.
+ -- Fix error in scrontab jobs when using slurm.conf:PropagatePrioProcess=1.
+ -- Fix slurmctld crash on a batch job submission with "--nodes 0,...".
+ -- Fix dynamic IP address fanout forwarding when using auth/slurm.
+
 * Changes in Slurm 23.11.7
 ==========================
  -- slurmrestd - Correct OpenAPI specification for
