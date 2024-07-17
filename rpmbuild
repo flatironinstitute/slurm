@@ -1,6 +1,8 @@
 #!/bin/bash -ex
 ver=$(awk '/^Version:/ { print $2 ; exit }' slurm.spec)
 git archive --prefix=slurm-$ver/ --format=tar HEAD | bzip2 > slurm-$ver.tar.bz2
+. /mnt/sw/lmod/setup.sh
 module purge
-module load cuda
+module load cuda #oneapi-level-zero
+#export C_INCLUDE_PATH=$C_INCLUDE_PATH:$ONEAPI_LEVEL_ZERO_ROOT/include/level_zero
 rpmbuild -ta slurm-$ver.tar.bz2
