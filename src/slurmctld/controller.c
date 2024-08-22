@@ -533,8 +533,6 @@ int main(int argc, char **argv)
 	if (switch_init(1) != SLURM_SUCCESS)
 		fatal("Failed to initialize switch plugin");
 
-	agent_init();
-
 	if (original && under_systemd)
 		xsystemd_change_mainpid(getpid());
 
@@ -546,6 +544,8 @@ int main(int argc, char **argv)
 		control_time = 0;
 		reconfig = false;
 
+		agent_init();
+
 		/* start in primary or backup mode */
 		if (!slurmctld_primary && !backup_has_control) {
 			controller_fini_scheduling(); /* make sure shutdown */
@@ -555,7 +555,6 @@ int main(int argc, char **argv)
 			if (bb_g_init() != SLURM_SUCCESS)
 				fatal("failed to initialize burst buffer plugin");
 			run_backup();
-			agent_init();	/* Killed at any previous shutdown */
 			(void) _shutdown_backup_controller();
 		} else {
 			if (acct_storage_g_init() != SLURM_SUCCESS)
@@ -792,6 +791,8 @@ int main(int argc, char **argv)
 			recover = 2;
 			continue;
 		}
+
+		config_power_mgr_fini();
 
 		/* stop the heartbeat last */
 		heartbeat_stop();

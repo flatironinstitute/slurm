@@ -24,6 +24,11 @@ group.add_argument(
 parser.add_argument(
     "--no-color", action="store_true", help="the logs won't include color"
 )
+parser.add_argument(
+    "--allow-slurmdbd-modify",
+    action="store_true",
+    help="allow running in local-config even if require_accounting(modify=True)",
+)
 parser.add_argument("PYTEST_OPTION ...", nargs="?", help="additional pytest options")
 parser.add_argument("TEST_FILE_OR_DIR ...", nargs="?", help="test files or directories")
 args, unknown = parser.parse_known_args()
@@ -43,7 +48,17 @@ atf_base_dir = str(pathlib.Path(__file__).resolve().parent)
 # Change directory to the base of the ATF repo
 os.chdir(atf_base_dir)
 
-command = "pytest-3"
-args = [command, "-s", f"-r{report_options}", "-v", "-p", "no:cacheprovider"]
+command = "pytest"
+# --disable-warnings is very useful for tests using pydantic,
+# logging.warning in tests are still shown
+args = [
+    command,
+    "-s",
+    f"-r{report_options}",
+    "-v",
+    "-p",
+    "no:cacheprovider",
+    "--disable-warnings",
+]
 args.extend(sys.argv[1:])
 os.execvp(command, args)

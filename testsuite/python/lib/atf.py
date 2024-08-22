@@ -20,6 +20,13 @@ import sys
 import time
 import traceback
 
+# slurmrestd
+import requests
+import signal
+
+# This module will be (un)imported in require_openapi_generator()
+openapi_client = None
+import importlib
 
 ##############################################################################
 # ATF module functions
@@ -465,6 +472,18 @@ done"""
     return pids
 
 
+def is_slurmrestd_running():
+    """Checks if slurmrestd is running.
+    Needs to be run after the related properties are set.
+    """
+    # TODO: We could check also if the required plugins/parsers in properties
+    #       are in the returned specs, but the format still depends on the version.
+    #       Once v0.0.39 is removed, we could add the extra check.
+    return repeat_until(
+        lambda: request_slurmrestd("openapi/v3"), lambda r: r.status_code == 200
+    )
+
+
 def is_slurmctld_running(quiet=False):
     """Checks whether slurmctld is running.
 
@@ -593,6 +612,10 @@ def start_slurm(clean=False, quiet=False):
 
     # Start slurmctld
     start_slurmctld(clean, quiet)
+
+    # Start slurmrestd if required
+    if properties["slurmrestd-started"]:
+        start_slurmrestd()
 
     # Build list of slurmds
     slurmd_list = []
@@ -751,6 +774,14 @@ def stop_slurm(fatal=True, quiet=False):
         run_command(f"pgrep -f {properties['slurm-sbin-dir']}/slurmd -a", quiet=quiet)
         failures.append(f"Some slurmds are still running ({pids})")
 
+    # Stop slurmrestd if was started
+    if properties["slurmrestd-started"]:
+        properties["slurmrestd"].send_signal(signal.SIGINT)
+        try:
+            properties["slurmrestd"].wait(timeout=60)
+        except:
+            properties["slurmrestd"].kill()
+
     if failures:
         if fatal:
             pytest.fail(failures[0])
@@ -836,6 +867,109 @@ def require_slurm_running():
 
     # As a side effect, build up initial nodes dictionary
     nodes = get_nodes(quiet=True)
+
+
+def request_slurmrestd(request):
+    """Returns the slurmrestd response of a given request.
+    It needs slurmrestd to be running (see require_slurmrestd())
+    """
+    return requests.get(
+        f"{properties['slurmrestd_url']}/{request}",
+        headers=properties["slurmrestd-headers"],
+    )
+
+
+def require_openapi_generator(version="7.3.0"):
+    """Generates an OpenAPI client using OpenAPI-Generator, or skips if not available (even in auto-config).
+    It needs slurmrestd to be running (see require_slurmrestd()).
+    It also sets the necessary OPENAPI_GENERATOR_VERSION and JAVA_OPTS
+    environment variables.
+    Args:
+        version (string): the required version.
+
+    Returns:
+        None
+    """
+
+    # Require specific testing version
+    os.environ["OPENAPI_GENERATOR_VERSION"] = version
+
+    # Work around: https://github.com/OpenAPITools/openapi-generator/issues/13684
+    os.environ[
+        "JAVA_OPTS"
+    ] = "--add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED"
+
+    ogc_version = (
+        run_command_output("openapi-generator-cli version").strip().split("\n")[-1]
+    )
+    if ogc_version != version:
+        pytest.skip(
+            f"test requires openapi-generator-cli version {version} (not {ogc_version})",
+            allow_module_level=True,
+        )
+
+    # allow pointing to an existing OpenAPI generated client
+    if "SLURM_TESTSUITE_OPENAPI_CLIENT" in os.environ:
+        pyapi_path = f"{os.environ['SLURM_TESTSUITE_OPENAPI_CLIENT']}/pyapi/"
+        spec_path = f"{os.environ['SLURM_TESTSUITE_OPENAPI_CLIENT']}/openapi.json"
+    else:
+        pyapi_path = f"{module_tmp_path}/pyapi/"
+        spec_path = f"{module_tmp_path}/openapi.json"
+
+        r = requests.get(
+            f"{properties['slurmrestd_url']}/openapi/v3",
+            headers=properties["slurmrestd-headers"],
+        )
+        if r.status_code != 200:
+            pytest.fail(f"Error requesting openapi specs from slurmrestd: {r}")
+
+        with open(spec_path, "w") as f:
+            f.write(r.text)
+            f.close()
+        run_command(
+            f"openapi-generator-cli generate -i '{spec_path}' -g python-pydantic-v1 --strict-spec=true -o '{pyapi_path}'",
+            fatal=True,
+            timeout=60,
+        )
+
+    sys.path.insert(0, pyapi_path)
+
+    # Re-import openapi_client
+    # Regular import doesn't work if was already imported by another test.
+    global openapi_client
+    module_name = "openapi_client"
+    module_prefix = module_name + "."
+    for mod in list(sys.modules):
+        if mod == module_name or mod.startswith(module_prefix):
+            del sys.modules[mod]
+    openapi_client = importlib.import_module(module_name)
+    importlib.reload(openapi_client)
+
+    properties["openapi_config"] = openapi_client.Configuration()
+    properties["openapi_config"].host = properties["slurmrestd_url"]
+    properties["openapi_config"].access_token = properties["slurmrestd-headers"][
+        "X-SLURM-USER-TOKEN"
+    ]
+
+
+def openapi_slurm():
+    """
+    Returns a SlurmApi client from OpenAPI.
+    It needs require_openapi_generator() to be run first.
+    """
+    return openapi_client.SlurmApi(
+        openapi_client.ApiClient(properties["openapi_config"])
+    )
+
+
+def openapi_slurmdb():
+    """
+    Returns a SlurmdbApi client from OpenAPI.
+    It needs require_openapi_generator() to be run first.
+    """
+    return openapi_client.SlurmdbApi(
+        openapi_client.ApiClient(properties["openapi_config"])
+    )
 
 
 def backup_config_file(config="slurm"):
@@ -958,7 +1092,7 @@ def restore_config_file(config="slurm"):
         )
 
 
-def get_config(live=True, source="slurm", quiet=False):
+def get_config(live=True, source="slurm", quiet=False, delimiter="="):
     """Returns the Slurm configuration as a dictionary.
 
     Args:
@@ -972,6 +1106,7 @@ def get_config(live=True, source="slurm", quiet=False):
             If live is False, source should be the name of the config file
             without the .conf prefix (e.g. slurmdbd).
         quiet (boolean): If True, logging is performed at the TRACE log level.
+        delimiter (string): The delimiter between the parameter name and the value.
 
     Returns:
         A dictionary comprised of the parameter names and their values.
@@ -1000,7 +1135,7 @@ def get_config(live=True, source="slurm", quiet=False):
         output = run_command_output(f"{command} show config", fatal=True, quiet=quiet)
 
         for line in output.splitlines():
-            if match := re.search(rf"^\s*(\S+)\s*=\s*(.*)$", line):
+            if match := re.search(rf"^\s*(\S+)\s*{re.escape(delimiter)}\s*(.*)$", line):
                 slurm_dict[match.group(1)] = match.group(2).rstrip()
     else:
         config = source
@@ -1012,7 +1147,7 @@ def get_config(live=True, source="slurm", quiet=False):
             f"cat {config_file}", user=properties["slurm-user"], quiet=quiet
         )
         for line in output.splitlines():
-            if match := re.search(rf"^\s*(\S+)\s*=\s*(.*)$", line):
+            if match := re.search(rf"^\s*(\S+)\s*{re.escape(delimiter)}\s*(.*)$", line):
                 parameter_name, parameter_value = (
                     match.group(1),
                     match.group(2).rstrip(),
@@ -1029,7 +1164,7 @@ def get_config(live=True, source="slurm", quiet=False):
                     instance_name, subparameters = parameter_value.split(" ", 1)
                     subparameters_dict = {}
                     for subparameter_name, subparameter_value in re.findall(
-                        r" *([^= ]+) *= *([^ ]+)", subparameters
+                        rf" *([^= ]+) *{re.escape(delimiter)} *([^ ]+)", subparameters
                     ):
                         # Reformat the value if necessary
                         if is_integer(subparameter_value):
@@ -1126,7 +1261,11 @@ def config_parameter_includes(name, value, **get_config_kwargs):
 
 
 def set_config_parameter(
-    parameter_name, parameter_value, source="slurm", restart=False
+    parameter_name,
+    parameter_value,
+    source="slurm",
+    restart=False,
+    delimiter="=",
 ):
     """Sets the value of the specified configuration parameter.
 
@@ -1144,6 +1283,7 @@ def set_config_parameter(
         source (string): Name of the config file without the .conf prefix.
         restart (boolean): If True and slurm is running, slurm will be
             restarted rather than reconfigured.
+        delimiter (string): The delimiter between the parameter name and the value.
 
     Note:
         When setting a complex parameter (one which may be repeated and has
@@ -1154,7 +1294,8 @@ def set_config_parameter(
         None
 
     Example:
-        >>> set_config_parameter('ClusterName', 'cluster1')
+        >>> set_config_parameter("ClusterName", "cluster1")
+        >>> set_config_parameter("required", "/tmp/spank_plugin.so", source="plugstack", delimiter=" ")
     """
 
     if not properties["auto-config"]:
@@ -1176,19 +1317,19 @@ def set_config_parameter(
         f"cat {config_file}", user=properties["slurm-user"], quiet=True
     )
     for line in output.splitlines():
-        if not re.search(rf"(?i)^\s*{parameter_name}\s*=", line):
-            lines.append(f"{line}\n")
+        if not re.search(rf"(?i)^\s*{parameter_name}\s*{re.escape(delimiter)}", line):
+            lines.append(line)
     if isinstance(parameter_value, dict):
         for instance_name in parameter_value:
-            line = f"{parameter_name}={instance_name}"
+            line = f"{parameter_name}{delimiter}{instance_name}"
             for subparameter_name, subparameter_value in parameter_value[
                 instance_name
             ].items():
-                line += f" {subparameter_name}={subparameter_value}"
-            lines.append(f"{line}\n")
+                line += f" {subparameter_name}{delimiter}{subparameter_value}"
+            lines.append(line)
     elif parameter_value != None:
-        lines.append(f"{parameter_name}={parameter_value}\n")
-    input = "".join(lines)
+        lines.append(f"{parameter_name}{delimiter}{parameter_value}")
+    input = "\n".join(lines)
     run_command(
         f"cat > {config_file}",
         input=input,
@@ -1389,7 +1530,12 @@ def require_whereami(is_cray=False):
 
 
 def require_config_parameter(
-    parameter_name, parameter_value, condition=None, source="slurm", skip_message=None
+    parameter_name,
+    parameter_value,
+    condition=None,
+    source="slurm",
+    skip_message=None,
+    delimiter="=",
 ):
     """Ensures that a configuration parameter has the required value.
 
@@ -1406,6 +1552,7 @@ def require_config_parameter(
         source (string): Name of the config file without the .conf prefix.
         skip_message (string): Message to be displayed if in local-config mode
             and parameter not present.
+        delimiter (string): The delimiter between the parameter name and the value.
 
     Note:
         When requiring a complex parameter (one which may be repeated and has
@@ -1439,7 +1586,7 @@ def require_config_parameter(
         parameter_value = parameter_value.casefold()
 
     observed_value = get_config_parameter(
-        parameter_name, live=False, source=source, quiet=True
+        parameter_name, live=False, source=source, quiet=True, delimiter=delimiter
     )
 
     condition_satisfied = False
@@ -1453,7 +1600,9 @@ def require_config_parameter(
 
     if not condition_satisfied:
         if properties["auto-config"]:
-            set_config_parameter(parameter_name, parameter_value, source=source)
+            set_config_parameter(
+                parameter_name, parameter_value, source=source, delimiter=delimiter
+            )
         else:
             if skip_message is None:
                 skip_message = f"This test requires the {parameter_name} parameter to be {parameter_value} (but it is {observed_value})"
@@ -1607,7 +1756,7 @@ def require_accounting(modify=False):
         if modify:
             backup_accounting_database()
     else:
-        if modify:
+        if modify and not properties["allow-slurmdbd-modify"]:
             require_auto_config("wants to modify the accounting database")
         elif (
             get_config_parameter("AccountingStorageType", live=False, quiet=True)
@@ -1617,6 +1766,106 @@ def require_accounting(modify=False):
                 "This test requires accounting to be configured",
                 allow_module_level=True,
             )
+
+
+def require_slurmrestd(openapi_plugins, data_parsers):
+    properties["openapi_plugins"] = openapi_plugins
+    properties["data_parsers"] = data_parsers
+
+    if properties["auto-config"]:
+        properties["slurmrestd-started"] = True
+    elif "SLURM_TESTSUITE_SLURMRESTD_URL" in os.environ:
+        properties["slurmrestd_url"] = os.environ["SLURM_TESTSUITE_SLURMRESTD_URL"]
+
+        # Setup auth token
+        setup_slurmrestd_headers()
+
+        # Check version is the expected one
+        if not is_slurmrestd_running():
+            pytest.skip(
+                f"This test needs slurmrestd runnig in SLURM_TESTSUITE_SLURMRESTD_URL but cannot connect with {os.environ['SLURM_TESTSUITE_SLURMRESTD_URL']}",
+                allow_module_level=True,
+            )
+    else:
+        pytest.skip(
+            "This test requires to start slurmrestd or SLURM_TESTSUITE_SLURMRESTD_URL",
+            allow_module_level=True,
+        )
+
+
+def start_slurmrestd():
+    os.environ["SLURM_JWT"] = "daemon"
+    port = None
+
+    while not port:
+        port = get_open_port()
+        args = [
+            "slurmrestd",
+            "-a",
+            "jwt",
+            "-s",
+            properties["openapi_plugins"],
+        ]
+        if properties["data_parsers"] is not None:
+            args.extend(["-d", properties["data_parsers"]])
+
+        args.append(f"localhost:{port}")
+        logging.debug(f"Trying to start slurmrestd: {args}")
+
+        properties["slurmrestd"] = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        s = None
+
+        for i in range(100):
+            if properties["slurmrestd"].poll():
+                break
+
+            try:
+                s = socket.create_connection(("localhost", port))
+                break
+            except Exception as e:
+                logging.debug(f"Unable to connect to port {port}: {e}")
+            time.sleep(1)
+
+        if s:
+            s.close()
+            break
+
+        logging.debug(f"slurmrestd accepting on port {port} but is still running")
+        properties["slurmrestd"].kill()
+        properties["slurmrestd"].wait()
+        port = None
+
+    del os.environ["SLURM_JWT"]
+
+    properties["slurmrestd_url"] = f"http://localhost:{port}/"
+
+    # Setup auth token
+    setup_slurmrestd_headers()
+
+    # Check slurmrestd is up
+    if not is_slurmrestd_running():
+        pytest.fail(f"Slurmrestd not responding")
+
+
+def setup_slurmrestd_headers():
+    # Create the headers with the token to connect later
+    token = (
+        run_command_output("scontrol token lifespan=600", fatal=True)
+        .replace("SLURM_JWT=", "")
+        .replace("\n", "")
+    )
+    if token == "":
+        logging.warning("unable to get auth/jwt token")
+
+    properties["slurmrestd-headers"] = {
+        "X-SLURM-USER-NAME": get_user_name(),
+        "X-SLURM-USER-TOKEN": token,
+    }
 
 
 def get_user_name():
@@ -2466,13 +2715,18 @@ def get_steps(step_id=None, **run_command_kwargs):
     """
 
     steps_dict = {}
+    step_dict = {}
 
     command = "scontrol -d -o show steps"
     if step_id is not None:
         command += f" {step_id}"
-    output = run_command_output(command, fatal=True, **run_command_kwargs)
+    result = run_command(command, **run_command_kwargs)
 
-    step_dict = {}
+    if result["exit_code"]:
+        logging.debug(f"scontrol command failed, no steps returned")
+        return step_dict
+
+    output = result["stdout"]
     for line in output.splitlines():
         if line == "":
             continue
@@ -2611,7 +2865,7 @@ def get_step_parameter(step_id, parameter_name, default=None, quiet=False):
         'primary'
     """
 
-    steps_dict = get_steps(quiet=quiet)
+    steps_dict = get_steps(step_id, quiet=quiet)
 
     if step_id not in steps_dict:
         logging.debug(f"Step ({step_id}) was not found in the step list")
@@ -2698,7 +2952,7 @@ def wait_for_step(job_id, step_id, **repeat_until_kwargs):
     step_str = f"{job_id}.{step_id}"
     return repeat_until(
         lambda: run_command_output(f"scontrol -o show step {step_str}"),
-        lambda out: re.search(f"StepId={step_str}", out) is not None,
+        lambda out: re.search(rf"StepId={step_str}", out) is not None,
         **repeat_until_kwargs,
     )
 
@@ -2727,7 +2981,7 @@ def wait_for_step_accounted(job_id, step_id, **repeat_until_kwargs):
     step_str = f"{job_id}.{step_id}"
     return repeat_until(
         lambda: run_command_output(f"sacct -j {job_id} -o jobid"),
-        lambda out: re.search(f"{step_str}", out) is not None,
+        lambda out: re.search(rf"{step_str}", out) is not None,
         **repeat_until_kwargs,
     )
 
@@ -3939,6 +4193,7 @@ else:
 properties["submitted-jobs"] = []
 properties["test-user"] = pwd.getpwuid(os.getuid()).pw_name
 properties["auto-config"] = False
+properties["allow-slurmdbd-modify"] = False
 
 # Instantiate a nodes dictionary. These are populated in require_slurm_running.
 nodes = {}
