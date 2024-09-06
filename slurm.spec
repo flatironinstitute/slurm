@@ -1,5 +1,5 @@
 Name:		slurm
-Version:	23.11.9
+Version:	23.11.10
 %define rel	1
 %define dist	fi
 Release:	%{rel}%{?dist}

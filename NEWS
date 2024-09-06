@@ -1,6 +1,16 @@
 This file describes changes in recent versions of Slurm. It primarily
 documents those changes that are of interest to users and administrators.
 
+* Changes in Slurm 23.11.10
+===========================
+ -- switch/hpe_slingshot - Fix issue that could result in a 0 length state file.
+ -- Fix unnecessary message protocol downgrade for unregistered nodes.
+ -- Fix unnecessarily packing alias addrs when terminating jobs with a mix of
+    non-cloud/dynamic nodes and powered down cloud/dynamic nodes.
+ -- Fix allowing access to reservations without MaxStartDelay set.
+ -- Fix scontrol allowing updating job with bad cpus-per-task value.
+ -- sattach - Fix regression from 23.11.9 security fix leading to crash.
+
 * Changes in Slurm 23.11.9
 ==========================
  -- Fix many commands possibly reporting an "Unexpected Message Received" when
@@ -39,6 +49,7 @@ documents those changes that are of interest to users and administrators.
     or wckey. This affects the following endpoints:
       'GET /slurmdb/v0.0.39/jobs'
  -- switch/hpe_slingshot - Fix security issue around managing VNI access.
+    CVE-2024-42511.
 
 * Changes in Slurm 23.11.8
 ==========================
@@ -868,6 +879,7 @@ documents those changes that are of interest to users and administrators.
 
 * Changes in Slurm 23.02.9
 ==========================
+ -- sattach - Fix regression from 23.02.8 security fix leading to crash.
 
 * Changes in Slurm 23.02.8
 ==========================
@@ -875,6 +887,7 @@ documents those changes that are of interest to users and administrators.
     once per minute background task occurs.
  -- Fix assertion in developer mode on a failed message unpack.
  -- switch/hpe_slingshot - Fix security issue around managing VNI access.
+    CVE-2024-42511.
 
 * Changes in Slurm 23.02.7
 ==========================
