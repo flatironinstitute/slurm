@@ -1,6 +1,7 @@
 Name:		slurm
 Version:	24.11.4
 %define rel	1
+%define dist	fi
 %if %{defined patch} && %{undefined extraver}
 %define extraver .patched
 %endif
