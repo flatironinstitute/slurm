@@ -9,14 +9,8 @@
 
 #include "src/common/slurm_xlator.h"
 #include "src/common/xstring.h"
-#if SLURM_VERSION_MAJOR(SLURM_VERSION_NUMBER) > 22
 #include "src/interfaces/acct_gather_profile.h"
 #include "src/interfaces/gres.h"
-#else
-#include "src/common/slurm_acct_gather_profile.h"
-#include "src/common/gres.h"
-#define warning info
-#endif
 
 
 /*
@@ -218,7 +212,7 @@ static void write_job_info() {
 			, g_job->cpus_per_task
 			, g_job->step_mem
 			);
-	ListIterator i;
+	list_itr_t *i;
 	gres_state_t *gres;
 	if (g_job->step_gres_list) {
 		i = list_iterator_create (g_job->step_gres_list);
@@ -425,21 +419,10 @@ extern int acct_gather_profile_p_add_sample_data(int table_id, void *data,
 	return SLURM_SUCCESS;
 }
 
-extern void acct_gather_profile_p_conf_values(List *data)
+extern void acct_gather_profile_p_conf_values(list_t **data)
 {
-	config_key_pair_t *key_pair;
-
-	xassert(*data);
-
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("ProfileExporterDir");
-	key_pair->value = xstrdup(exporter_conf.dir);
-	list_append(*data, key_pair);
-
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("ProfileExporterDefault");
-	key_pair->value = xstrdup(acct_gather_profile_to_string(exporter_conf.def));
-	list_append(*data, key_pair);
+	add_key_pair(*data, "ProfileExporterDir", "%s", exporter_conf.dir);
+	add_key_pair(*data, "ProfileExporterDefault", "%s", acct_gather_profile_to_string(exporter_conf.def));
 
 	return;
 }
