@@ -174,7 +174,7 @@ BuildRequires: numactl-devel
 %endif
 
 %if %{with pmix} && "%{_with_pmix}" == "--with-pmix"
-BuildRequires: pmix
+#BuildRequires: pmix
 %global pmix_version %(rpm -q pmix --qf "%{RPMTAG_VERSION}")
 %endif
 
@@ -312,7 +312,7 @@ Summary: Slurm compute node daemon
 Group: System Environment/Base
 Requires: %{name}%{?_isa} = %{version}-%{release}
 %if %{with pmix} && "%{_with_pmix}" == "--with-pmix"
-Requires: pmix = %{pmix_version}
+#Requires: pmix = %{pmix_version}
 %endif
 %if %{with ucx} && "%{_with_ucx}" == "--with-ucx"
 Requires: ucx = %{ucx_version}
