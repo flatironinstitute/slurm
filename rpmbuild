@@ -5,9 +5,9 @@ src=$ver.tar
 git archive --prefix=$ver/ --format=tar $ref > $src
 . /etc/os-release
 plat=${PLATFORM_ID#platform:}
-. /mnt/sw/lmod/setup.sh
-module purge
-module load cuda pmix #oneapi-level-zero
-#export C_INCLUDE_PATH=$C_INCLUDE_PATH:$ONEAPI_LEVEL_ZERO_ROOT/include/level_zero
+deps=/mnt/sw/nix/state/profiles/$(uname -m)/$ID${VERSION_ID%.[0-9]*}/slurm
+export C_INCLUDE_PATH=$deps/include
+export LIBRARY_PATH=$deps/lib
+export PKG_CONFIG_PATH=$deps/lib/pkgconfig
 rpmbuild -ta $src -D "ref $ver" -D "dist .$plat" --with pmix --with nvml --with jwt --with freeipmi
 rm $src
