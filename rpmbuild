@@ -1,12 +1,13 @@
 #!/bin/bash -ex
-if [[ $1 = [0-9]* ]] ; then
-	ver=$1 ; shift
-else
-	ver=$(awk '/^Version:/ { print $2 ; exit }' slurm.spec)
-fi
-git archive --prefix=slurm-$ver/ --format=tar HEAD | bzip2 > slurm-$ver.tar.bz2
+ref=${1:-HEAD}
+ver=`git describe $ref`
+src=$ver.tar
+git archive --prefix=$ver/ --format=tar $ref > $src
+. /etc/os-release
+plat=${PLATFORM_ID#platform:}
 . /mnt/sw/lmod/setup.sh
 module purge
 module load cuda pmix #oneapi-level-zero
 #export C_INCLUDE_PATH=$C_INCLUDE_PATH:$ONEAPI_LEVEL_ZERO_ROOT/include/level_zero
-rpmbuild -ta slurm-$ver.tar.bz2 --with pmix --with nvml --with jwt --with freeipmi
+rpmbuild -ta $src -D "ref $ver" -D "dist .$plat" --with pmix --with nvml --with jwt --with freeipmi
+rm $src

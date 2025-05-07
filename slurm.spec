@@ -1,25 +1,21 @@
 Name:		slurm
 Version:	24.11.4
-%define rel	1
-%define dist	fi
+%define rel	fi1
 %if %{defined patch} && %{undefined extraver}
 %define extraver .patched
 %endif
 Release:	%{rel}%{?extraver}%{?dist}
 Summary:	Slurm Workload Manager
+VCS:		git:https://github.com/flatironinstitute/slurm:%{?ref}
 
 Group:		System Environment/Base
 License:	GPLv2+
 URL:		https://slurm.schedmd.com/
 
 # when the rel number is one, the directory name does not include it
-%if "%{rel}" == "1"
-%global slurm_source_dir %{name}-%{version}
-%else
-%global slurm_source_dir %{name}-%{version}-%{rel}
-%endif
+%global slurm_source_dir %{?ref}%{?!ref:slurm-%{version}}
 
-Source:		%{slurm_source_dir}.tar.bz2
+Source:		%{slurm_source_dir}.tar
 %{lua: local patchnum=0
   for pfile in string.gmatch(rpm.expand("%{?patch}"), "%S+") do
     print('Patch'..patchnum..':\t'..pfile..'\n')
@@ -261,6 +257,7 @@ Slurm is an open source, fault-tolerant, and highly scalable
 cluster management and job scheduling system for Linux clusters.
 Components include machine status, partition management,
 job management, scheduling and accounting modules
+Built from https://github.com/flatironinstitute/slurm %{?ref}
 
 %package perlapi
 Summary: Perl API to Slurm
@@ -297,7 +294,7 @@ Summary: Slurm controller daemon
 Group: System Environment/Base
 Requires: %{name}%{?_isa} = %{version}-%{release}
 %if %{with pmix} && "%{_with_pmix}" == "--with-pmix"
-Requires: pmix = %{pmix_version}
+#Requires: pmix = %{pmix_version}
 %endif
 %if %{with ucx} && "%{_with_ucx}" == "--with-ucx"
 Requires: ucx = %{ucx_version}

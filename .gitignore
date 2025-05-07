@@ -76,3 +76,4 @@ autom4te.cache
 /testsuite/python/pytest.ini
 TAGS
 tags
+/slurm-*.tar
