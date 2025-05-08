@@ -1056,6 +1056,12 @@ static data_for_each_cmd_t _foreach_parse_qos_string_id(data_t *src, void *arg)
 			       caller, false))) {
 		xassert(qos);
 		list_append(qos_list, xstrdup_printf("%u", qos->id));
+	} else {
+		char *path = NULL;
+		on_error(PARSING, parser->type, args, ESLURM_INVALID_QOS,
+			 set_source_path(&path, args, parent_path), __func__,
+			 "Unable to resolve QOS: %s", data_get_string(src));
+		xfree(path);
 	}
 
 	FREE_NULL_DATA(ppath);
@@ -1379,6 +1385,7 @@ static void _fill_job_stp(job_std_pattern_t *job_stp, slurmdb_job_rec_t *job)
 {
 	slurmdb_step_rec_t *step = job->first_step_ptr;
 
+	job_stp->array_job_id = job->array_job_id;
 	job_stp->array_task_id = job->array_task_id;
 	job_stp->first_step_name = step ? step->stepname : NULL;
 	job_stp->first_step_node = step ? step->nodes : NULL;
@@ -1396,7 +1403,7 @@ static int DUMP_FUNC(JOB_STDIN)(const parser_t *const parser, void *obj,
 				data_t *dst, args_t *args)
 {
 	slurmdb_job_rec_t *job = obj;
-	job_std_pattern_t job_stp;
+	job_std_pattern_t job_stp = { 0 };
 	char *tmp_path = NULL;
 	int rc;
 
@@ -1414,7 +1421,7 @@ static int DUMP_FUNC(JOB_STDOUT)(const parser_t *const parser, void *obj,
 				data_t *dst, args_t *args)
 {
 	slurmdb_job_rec_t *job = obj;
-	job_std_pattern_t job_stp;
+	job_std_pattern_t job_stp = { 0 };
 	char *tmp_path = NULL;
 	int rc;
 
@@ -1432,7 +1439,7 @@ static int DUMP_FUNC(JOB_STDERR)(const parser_t *const parser, void *obj,
 				data_t *dst, args_t *args)
 {
 	slurmdb_job_rec_t *job = obj;
-	job_std_pattern_t job_stp;
+	job_std_pattern_t job_stp = { 0 };
 	char *tmp_path = NULL;
 	int rc;
 
@@ -9009,6 +9016,7 @@ static const flag_bit_t PARSER_FLAG_ARRAY(FLAGS)[] = {
 	add_flag_bit(FLAG_COMPLEX_VALUES, "COMPLEX"),
 	add_flag_bit(FLAG_PREFER_REFS, "PREFER_REFS"),
 	add_flag_bit(FLAG_MINIMIZE_REFS, "MINIMIZE_REFS"),
+	add_flag_bit(FLAG_INLINE_ENUMS, "INLINE_ENUMS"),
 };
 
 #define add_flag(flag_value, mask, flag_string, hidden, desc)               \

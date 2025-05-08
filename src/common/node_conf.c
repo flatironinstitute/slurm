@@ -59,6 +59,7 @@
 #include "src/common/assoc_mgr.h"
 #include "src/common/hostlist.h"
 #include "src/common/macros.h"
+#include "src/common/node_features.h"
 #include "src/common/pack.h"
 #include "src/common/parse_time.h"
 #include "src/common/read_config.h"
@@ -83,8 +84,6 @@ strong_alias(node_name2bitmap, slurm_node_name2bitmap);
 strong_alias(find_node_record, slurm_find_node_record);
 
 /* Global variables */
-list_t *active_feature_list;	/* list of currently active features_records */
-list_t *avail_feature_list;	/* list of available features_records */
 list_t *config_list = NULL;	/* list of config_record entries */
 list_t *front_end_list = NULL;	/* list of slurm_conf_frontend_t entries */
 time_t last_node_update = (time_t) 0;	/* time of last update */
@@ -1390,7 +1389,10 @@ extern int hostlist2bitmap(hostlist_t *hl, bool test_alias, bitstr_t **bitmap)
 
 	hi = hostlist_iterator_create(hl);
 	while ((name = hostlist_next(hi))) {
-		rc = _single_node_name2bitmap(name, test_alias, *bitmap, NULL);
+		int tmp_rc;
+		if ((tmp_rc = _single_node_name2bitmap(name, test_alias,
+						       *bitmap, NULL)))
+			rc = tmp_rc;
 		free(name);
 	}
 
