@@ -24,6 +24,8 @@ import traceback
 import requests
 import signal
 
+import json
+
 # This module will be (un)imported in require_openapi_generator()
 openapi_client = None
 import importlib
@@ -515,6 +517,49 @@ def is_slurmctld_running(quiet=False):
     return False
 
 
+def gcore(component, pid=None, sbin=True):
+    """Generates a gcore file for all pids running of a given Slurm component.
+
+    The gcore file will be save at slurm-logs-dir, where all the logs and kernel
+    coredumps should be generated too.
+
+    Args:
+        component (string): The name of the component. E.g. slurmctld, slurmdbd...
+        pid (integer): The specific PID of the process to gcore. All PIDs of component are gcored by default...
+        sbin: If True search for pids related to slurm-sbin-dir, or slurm-bin-dir otherwise.
+
+    Returns:
+        None
+    """
+    # Ensure that slurm-logs-dir is set.
+    if "slurm-logs-dir" not in properties:
+        properties["slurm-logs-dir"] = os.path.dirname(
+            get_config_parameter("SlurmctldLogFile", live=False, quiet=True)
+        )
+
+    if sbin:
+        prefix = properties["slurm-sbin-dir"]
+    else:
+        prefix = properties["slurm-bin-dir"]
+
+    pids = pids_from_exe(f"{prefix}/{component}")
+
+    if pid:
+        if pid not in pids:
+            logging.warning(
+                f"Requested PID {pid} is not in the obtained PIDs ({pids}), but using it anyway"
+            )
+        pids = [pid]
+
+    if not pids:
+        logging.warning("Process {prefix}/{component} not found")
+    logging.debug(f"Getting gcores for PIDs: {pids}")
+    for pid in pids:
+        run_command(
+            f"sudo gcore -o {properties['slurm-logs-dir']}/{component}.core {pid}"
+        )
+
+
 def start_slurmctld(clean=False, quiet=False, also_slurmds=False):
     """Starts the Slurm controller daemon (slurmctld).
 
@@ -554,15 +599,9 @@ def start_slurmctld(clean=False, quiet=False, also_slurmds=False):
             "scontrol ping", lambda results: re.search(r"is UP", results["stdout"])
         ):
             logging.warning(
-                "scontrol ping is not responding, trying to get slurmctld backtrace..."
+                "scontrol ping is not responding, trying to get slurmctld core file..."
             )
-            pids = pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmctld")
-            if not pids:
-                logging.warning("process slurmctld not found")
-            for pid in pids:
-                run_command(
-                    f'sudo gdb -p {pid} -ex "set debuginfod enabled on" -ex "set pagination off" -ex "set confirm off" -ex "set print pretty on" -ex "set max-value-size unlimited" -ex "set print array-indexes on" -ex "set print array off" -ex "thread apply all bt full" -ex "quit"'
-                )
+            gcore("slurmctld")
             pytest.fail("Slurmctld is not running")
         else:
             logging.debug("Slurmctld started successfully")
@@ -616,15 +655,26 @@ def start_slurmctld(clean=False, quiet=False, also_slurmds=False):
                     f"slurmd_pgrep['exit_code']: {slurmd_pgrep['exit_code']}"
                 )
 
-            # Verify that the slurmd is registered correctly
-            if not repeat_until(
-                lambda: get_node_parameter(slurmd_name, "State"),
-                lambda state: state == "IDLE",
-            ):
-                pytest.fail(
-                    f"Node {slurmd_name} was not able to register correctly, not IDLE."
-                )
-            logging.debug(f"{slurmd_name} is IDLE.")
+        # Verify that the slurmd is registered correctly
+        if not repeat_until(
+            lambda: get_nodes(quiet=True),
+            lambda nodes: all(nodes[name]["state"] == ["IDLE"] for name in slurmd_list),
+        ):
+            nodes = get_nodes(quiet=True)
+            non_idle = [
+                name for name in slurmd_list if nodes[name]["state"] != ["IDLE"]
+            ]
+            logging.warning(
+                f"Getting the core files of the still not IDLE slurmds ({non_idle})"
+            )
+            for node in non_idle:
+                pid = run_command_output(
+                    f"pgrep -f 'slurmd -N {slurmd_name}'", quiet=quiet
+                ).strip()
+                gcore("slurmd", pid)
+            pytest.fail(f"Some nodes are not IDLE: {non_idle}")
+
+        logging.debug(f"All nodes are IDLE: {slurmd_list}")
 
 
 def start_slurmdbd(clean=False, quiet=False):
@@ -666,15 +716,9 @@ def start_slurmdbd(clean=False, quiet=False):
             "sacctmgr show cluster", lambda results: results["exit_code"] == 0
         ):
             logging.warning(
-                "sacctmgr show cluster is not responding, trying to get slurmdbd backtrace..."
+                "sacctmgr show cluster is not responding, trying to get slurmdbd core file..."
             )
-            pids = pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmdbd")
-            if not pids:
-                logging.warning("process slurmdbd not found")
-            for pid in pids:
-                run_command(
-                    f'sudo gdb -p {pid} -ex "set debuginfod enabled on" -ex "set pagination off" -ex "set confirm off" -ex "set print pretty on" -ex "set max-value-size unlimited" -ex "set print array-indexes on" -ex "set print array off" -ex "thread apply all bt full" -ex "quit"'
-                )
+            gcore("slurmdbd")
             pytest.fail("Slurmdbd is not running")
         else:
             logging.debug("Slurmdbd started successfully")
@@ -771,29 +815,40 @@ def stop_slurmctld(quiet=False, also_slurmds=False):
         lambda: pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmctld"),
         lambda pids: len(pids) == 0,
     ):
-        pids = pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmctld")
-        failures.append(f"Slurmctld is still running ({pids})")
-        logging.warning("Getting the bt of the still running slurmctld")
-        for pid in pids:
-            run_command(
-                f'sudo gdb -p {pid} -ex "set debuginfod enabled on" -ex "set pagination off" -ex "set confirm off" -ex "set print pretty on" -ex "set max-value-size unlimited" -ex "set print array-indexes on" -ex "set print array off" -ex "thread apply all bt full" -ex "quit"'
-            )
+        failures.append("Slurmctld is still running")
+        logging.warning("Getting the core files of the still running slurmctld")
+        gcore("slurmctld")
     else:
         logging.debug("No slurmctld is running.")
 
     if also_slurmds:
+        if get_version("sbin/slurmd") < (24, 11):
+            # FIXED: t20764.
+            slurmd_list = []
+            output = run_command_output(
+                f"perl -nle 'print $1 if /^NodeName=(\\S+)/' {properties['slurm-config-dir']}/slurm.conf",
+                quiet=quiet,
+            )
+            if not output:
+                failures.append("Unable to determine the slurmd node names")
+            else:
+                for node_name_expression in output.rstrip().split("\n"):
+                    if node_name_expression != "DEFAULT":
+                        slurmd_list.extend(node_range_to_list(node_name_expression))
+
+            for slurmd_name in slurmd_list:
+                run_command(
+                    f"sudo systemctl stop {slurmd_name}_slurmstepd.scope", quiet=quiet
+                )
+
         # Verify that slurmds are not running
         if not repeat_until(
             lambda: pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmd"),
             lambda pids: len(pids) == 0,
         ):
-            pids = pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmd")
-            failures.append(f"Some slurmds are still running ({pids})")
-            logging.warning("Getting the bt of the still running slurmds")
-            for pid in pids:
-                run_command(
-                    f'sudo gdb -p {pid} -ex "set debuginfod enabled on" -ex "set pagination off" -ex "set confirm off" -ex "set print pretty on" -ex "set max-value-size unlimited" -ex "set print array-indexes on" -ex "set print array off" -ex "thread apply all bt full" -ex "quit"'
-                )
+            failures.append("Some slurmds are still running")
+            logging.warning("Getting the core files of the still running slurmds")
+            gcore("slurmd")
         else:
             logging.debug("No slurmd is running.")
 
@@ -839,6 +894,8 @@ def stop_slurmdbd(quiet=False):
         timeout=60,
     ):
         failures.append("Slurmdbd is still running")
+        logging.warning("Getting the core files of the still running slurmdbd")
+        gcore("slurmdbd")
     else:
         logging.debug("No slurmdbd is running.")
 
@@ -986,6 +1043,162 @@ def require_slurm_running():
 
     # As a side effect, build up initial nodes dictionary
     nodes = get_nodes(quiet=True)
+
+
+def require_upgrades(
+    old_slurm_prefix="/opt/slurm-old", new_slurm_prefix="/opt/slurm-new"
+):
+    """Checks if has two different versions installed.
+
+    If they are not, skip.
+    """
+    if not properties["auto-config"]:
+        require_auto_config("to change/upgrade Slurm setup")
+
+    if not os.path.exists(old_slurm_prefix):
+        pytest.skip(
+            f"This test needs the upgrade setup. Old prefix {old_slurm_prefix} not exists."
+        )
+
+    if not os.path.exists(new_slurm_prefix):
+        pytest.skip(
+            f"This test needs the upgrade setup. New prefix {new_slurm_prefix} not exists."
+        )
+
+    # Double-check that old_version <= new_version
+    old_version = get_version(slurm_prefix=old_slurm_prefix)
+    new_version = get_version(slurm_prefix=new_slurm_prefix)
+    if old_version > new_version:
+        pytest.skip(
+            f"Old version ({old_version}) has to be older than new version ({new_version})"
+        )
+    logging.info(f"Required upgrade setup found: {old_version} and {new_version}")
+
+    properties["old-slurm-prefix"] = old_slurm_prefix
+    properties["new-slurm-prefix"] = new_slurm_prefix
+
+    logging.debug(
+        "Setting bin/ and sbin/ pointing to old version and saving a backup..."
+    )
+    run_command(
+        f"sudo mv {properties['slurm-sbin-dir']} {module_tmp_path}/upgrade-sbin",
+        quiet=True,
+        fatal=True,
+    )
+    run_command(
+        f"sudo mv {properties['slurm-bin-dir']} {module_tmp_path}/upgrade-bin",
+        quiet=True,
+        fatal=True,
+    )
+    run_command(
+        f"sudo mkdir {properties['slurm-sbin-dir']} {properties['slurm-bin-dir']}",
+        quiet=True,
+        fatal=True,
+    )
+    run_command(
+        f"sudo ln -s {properties['old-slurm-prefix']}/sbin/* {properties['slurm-sbin-dir']}/",
+        quiet=True,
+        fatal=True,
+    )
+    run_command(
+        f"sudo ln -s {properties['old-slurm-prefix']}/bin/* {properties['slurm-bin-dir']}/",
+        quiet=True,
+        fatal=True,
+    )
+
+
+def upgrade_component(component, new_version=True):
+    """Upgrades a component creating the required links, and restarts it if necessary.
+
+    This function needs require_upgrades() to be already run to work properly.
+
+    Args:
+        component (string): The bin/ or sbin/ component of Slurm to check.
+        new_version (boolean): Set it false to downgrade to the older version instead.
+
+    Returns:
+        A tuple representing the version. E.g. (25.05.0).
+    """
+
+    if (
+        "old-slurm-prefix" not in properties.keys()
+        or "new-slurm-prefix" not in properties.keys()
+    ):
+        pytest.fail("To upgrade_components() first we need to call require_upgrades()")
+
+    if not os.path.exists(f"{properties['slurm-prefix']}/{component}"):
+        pytest.fail(f"Unknown or not existing {component}")
+
+    if new_version:
+        upgrade_prefix = properties["new-slurm-prefix"]
+    else:
+        upgrade_prefix = properties["old-slurm-prefix"]
+
+    # Stop components when necessary
+    if component == "sbin/slurmdbd":
+        stop_slurmdbd()
+    elif component == "sbin/slurmctld":
+        stop_slurmctld()
+
+    run_command(
+        f"sudo rm -f {properties['slurm-prefix']}/{component}",
+        quiet=True,
+        fatal=True,
+    )
+    run_command(
+        f"sudo ln -s {upgrade_prefix}/{component} {properties['slurm-prefix']}/{component}",
+        quiet=True,
+        fatal=True,
+    )
+
+    # Restart components when necessary
+    if component == "sbin/slurmdbd":
+        start_slurmdbd()
+    elif component == "sbin/slurmctld":
+        start_slurmctld()
+
+
+def get_version(component="sbin/slurmctld", slurm_prefix=""):
+    """Returns the version of the Slurm component as a tuple.
+
+    It calls the component with -V and converts the output into a tuple.
+
+    Args:
+        component (string): The bin/ or sbin/ component of Slurm to check.
+        slurm_prefix (string): The path where the component is. By default the defined in testsuite.conf.
+
+    Returns:
+        A tuple representing the version. E.g. (25.05.0).
+    """
+    if slurm_prefix == "":
+        slurm_prefix = f"{properties['slurm-sbin-dir']}/.."
+
+    return tuple(
+        int(part) if part.isdigit() else 0
+        for part in run_command_output(
+            f"sudo {slurm_prefix}/{component} -V", quiet=True
+        )
+        .replace("slurm ", "")
+        .split(".")
+    )
+
+
+def require_version(version, component="sbin/slurmctld", slurm_prefix=""):
+    """Checks if the component is at least the required version, or skips.
+
+    Args:
+        version (tuple): The tuple representing the version.
+        component (string): The bin/ or sbin/ component of Slurm to check.
+        slurm_prefix (string): The path where the component is. By default the defined in testsuite.conf.
+
+    Returns:
+        A tuple representing the version. E.g. (25.05.0).
+    """
+    component_version = get_version(component, slurm_prefix)
+    if component_version < version:
+        pytest.skip(
+            f"The version of {component} is {component_version}, required is {version}"
+        )
 
 
 def request_slurmrestd(request):
@@ -1604,6 +1817,74 @@ def require_tool(tool):
         pytest.skip(msg, allow_module_level=True)
 
 
+def require_mpi(mpi_option="pmix", mpi_compiler="mpicc"):
+    """Skips if we cannot use the --mpi=mpi_option or the mpi_compiler is not available".
+
+    Args:
+        mpi_option (string): The value to use with --mpi when submitting jobs.
+        mpi_compiler (string): The required compiler in the system.
+
+    Returns:
+        None
+    """
+
+    require_tool(mpi_compiler)
+    output = run_command_output("srun --mpi=list", fatal=True)
+    if re.search(rf"plugin versions available: .*{mpi_option}", output) is None:
+        pytest.skip(
+            f"This test needs to be able to use --mpi={mpi_option}",
+            allow_module_level=True,
+        )
+
+
+def require_influxdb(influx_client="influx", jobacct_gather="jobacct_gather/cgroup"):
+    """Require the influx client available and the right config.
+    With auto-config the default values would work. Without you may need to setup the acct_gather values in the testsuite.conf file.
+
+    Args:
+        influx_client (string): The name of the influxdb client. Default: influx.
+        jobacct_gather (string): To use influxdb we need to set some JobAcctGatherType. Default: cgroup.
+
+    Returns:
+        None
+    """
+
+    require_tool(influx_client)
+
+    require_config_parameter("JobAcctGatherType", jobacct_gather)
+    require_config_parameter("AcctGatherProfileType", "acct_gather_profile/influxdb")
+
+    require_config_parameter(
+        "ProfileInfluxDBHost",
+        f"{properties['influxdb_host']}:{properties['influxdb_port']}",
+        source="acct_gather",
+    )
+    require_config_parameter(
+        "ProfileInfluxDBDatabase", properties["influxdb_db"], source="acct_gather"
+    )
+    require_config_parameter("ProfileInfluxDBDefault", "ALL", source="acct_gather")
+    require_config_parameter("ProfileInfluxDBRTPolicy", "autogen", source="acct_gather")
+
+    request_influxdb(f"CREATE DATABASE {properties['influxdb_db']}")
+    properties["influxdb-started"] = True
+
+
+def request_influxdb(query):
+    """Send a query using the influx client. Requires to run require_influxdb first.
+
+    Args:
+        query (string): The query to send,
+
+    Returns:
+        The stdout returned by the influxdb client.
+        If the clients fails somehow, this function will fatal.
+    """
+    return run_command_output(
+        f"influx -host {properties['influxdb_host']} -port {properties['influxdb_port']} -database {properties['influxdb_db']} -format column -execute \"{query}\"",
+        fatal=True,
+    )
+
+
 def require_whereami():
     """Compiles the whereami.c program to be used by tests.
 
@@ -1914,12 +2195,18 @@ def start_slurmrestd():
     port = None
     attempts = 0
 
-    log_dir = os.path.dirname(
-        get_config_parameter("SlurmctldLogFile", live=False, quiet=True)
+    if "slurm-logs-dir" not in properties:
+        properties["slurm-logs-dir"] = os.path.dirname(
+            get_config_parameter("SlurmctldLogFile", live=False, quiet=True)
+        )
+
+    properties["slurmrestd_log"] = open(
+        f"{properties['slurm-logs-dir']}/slurmrestd.log", "w"
     )
-    properties["slurmrestd_log"] = open(f"{log_dir}/slurmrestd.log", "w")
     if not properties["slurmrestd_log"]:
-        pytest.fail(f"Unable to open slurmrestd log: {log_dir}/slurmrestd.log")
+        pytest.fail(
+            f"Unable to open slurmrestd log: {properties['slurm-logs-dir']}/slurmrestd.log"
+        )
 
     while not port and attempts < 15:
         port = get_open_port()
@@ -2152,38 +2439,29 @@ def get_nodes(live=True, quiet=False, **run_command_kwargs):
     nodes_dict = {}
 
     if live:
-        output = run_command_output(
-            "scontrol show nodes -oF", fatal=True, quiet=quiet, **run_command_kwargs
+        # TODO: Remove extra debug info for t22858 instead of fatal
+        result = run_command(
+            "scontrol show nodes --json -F",
+            fatal=False,
+            quiet=quiet,
+            **run_command_kwargs,
         )
+        if result["exit_code"]:
+            logging.debug(
+                "Fatal failure of 'scontrol show nodes', probably due 'Unable to contact slurm controller' (t22858)"
+            )
+            logging.debug("Getting gcore from slurmctld before fatal.")
+            gcore("slurmctld")
+            pytest.fail(
+                f"Command 'scontrol show nodes -oF' failed with rc={result['exit_code']}: {result['stderr']}"
+            )
+        output = result["stdout"]
+        node_dict_json = json.loads(output)["nodes"]
 
         node_dict = {}
-        for line in output.splitlines():
-            if line == "":
-                continue
-
-            while match := re.search(r"^ *([^ =]+)=(.*?)(?= +[^ =]+=| *$)", line):
-                parameter_name, parameter_value = match.group(1), match.group(2)
-
-                # Remove the consumed parameter from the line
-                line = re.sub(r"^ *([^ =]+)=(.*?)(?= +[^ =]+=| *$)", "", line)
-
-                # Reformat the value if necessary
-                if is_integer(parameter_value):
-                    parameter_value = int(parameter_value)
-                elif is_float(parameter_value):
-                    parameter_value = float(parameter_value)
-                elif parameter_value == "(null)":
-                    parameter_value = None
-
-                # Add it to the temporary node dictionary
-                node_dict[parameter_name] = parameter_value
-
+        for node in node_dict_json:
             # Add the node dictionary to the nodes dictionary
-            nodes_dict[node_dict["NodeName"]] = node_dict
-
-            # Clear the node dictionary for use by the next node
-            node_dict = {}
-
+            nodes_dict[node["name"]] = node
     else:
         # Get the config dictionary
         config_dict = get_config(live=False, quiet=quiet)
@@ -2248,7 +2526,7 @@ def get_node_parameter(node_name, parameter_name, default=None, live=True):
         'primary'
     """
 
-    nodes_dict = get_nodes(live=live)
+    nodes_dict = get_nodes(live=live, quiet=True)
 
     if node_name in nodes_dict:
         node_dict = nodes_dict[node_name]
@@ -2764,11 +3042,37 @@ def run_job_nodes(srun_args, **run_command_kwargs):
     return node_list
 
 
-def get_jobs(job_id=None, **run_command_kwargs):
-    """Returns the job configuration as a dictionary of dictionaries.
+def get_qos(name=None, **run_command_kwargs):
+    """Returns the QOSes in the system as a dictionary of dictionaries.
+
+    Args:
+        name: The name of a specific QOS of which to get parameters.
+
+    Returns:
+        A dictionary of dictionaries where the first level keys are the QOSes names
+        and with their values being a dictionary of configuration parameters for
+        the respective QOS.
+    """
+
+    command = "sacctmgr --json show qos"
+    if id is not None:
+        command += f" {name}"
+    output = run_command_output(command, fatal=True, quiet=True, **run_command_kwargs)
+
+    qos_dict = {}
+    qos_list = json.loads(output)["qos"]
+    for qos in qos_list:
+        qos_dict[qos["name"]] = qos
+
+    return qos_dict
+
+
+def get_jobs(job_id=None, dbd=False, **run_command_kwargs):
+    """Returns the jobs in the system as a dictionary of dictionaries.
 
     Args:
         job_id (integer): The id of a specific job of which to get parameters.
+        dbd (boolean): If True, obtain the jobs from sacct instead of scontrol.
 
     Returns:
         A dictionary of dictionaries where the first level keys are the job ids
@@ -2785,39 +3089,52 @@ def get_jobs(job_id=None, **run_command_kwargs):
 
     jobs_dict = {}
 
-    command = "scontrol -d -o show jobs"
-    if job_id is not None:
-        command += f" {job_id}"
-    output = run_command_output(command, fatal=True, **run_command_kwargs)
+    if dbd:
+        command = "sacct --json -X"
+        if job_id is not None:
+            command += f" -j {job_id}"
+        output = run_command_output(
+            command, fatal=True, quiet=True, **run_command_kwargs
+        )
 
-    job_dict = {}
-    for line in output.splitlines():
-        if line == "":
-            continue
+        jobs_list = json.loads(output)["jobs"]
+        for job in jobs_list:
+            jobs_dict[job["job_id"]] = job
 
-        while match := re.search(r"^ *([^ =]+)=(.*?)(?= +[^ =]+=| *$)", line):
-            param_name, param_value = match.group(1), match.group(2)
+    else:
+        command = "scontrol -d -o show jobs"
+        if job_id is not None:
+            command += f" {job_id}"
+        output = run_command_output(command, fatal=True, **run_command_kwargs)
 
-            # Remove the consumed parameter from the line
-            line = re.sub(r"^ *([^ =]+)=(.*?)(?= +[^ =]+=| *$)", "", line)
+        job_dict = {}
+        for line in output.splitlines():
+            if line == "":
+                continue
 
-            # Reformat the value if necessary
-            if is_integer(param_value):
-                param_value = int(param_value)
-            elif is_float(param_value):
-                param_value = float(param_value)
-            elif param_value == "(null)":
-                param_value = None
+            while match := re.search(r"^ *([^ =]+)=(.*?)(?= +[^ =]+=| *$)", line):
+                param_name, param_value = match.group(1), match.group(2)
 
-            # Add it to the temporary job dictionary
-            job_dict[param_name] = param_value
+                # Remove the consumed parameter from the line
+                line = re.sub(r"^ *([^ =]+)=(.*?)(?= +[^ =]+=| *$)", "", line)
 
-        # Add the job dictionary to the jobs dictionary
-        if job_dict:
-            jobs_dict[job_dict["JobId"]] = job_dict
+                # Reformat the value if necessary
+                if is_integer(param_value):
+                    param_value = int(param_value)
+                elif is_float(param_value):
+                    param_value = float(param_value)
+                elif param_value == "(null)":
+                    param_value = None
 
-            # Clear the job dictionary for use by the next job
-            job_dict = {}
+                # Add it to the temporary job dictionary
+                job_dict[param_name] = param_value
+
+            # Add the job dictionary to the jobs dictionary
+            if job_dict:
+                jobs_dict[job_dict["JobId"]] = job_dict
+
+                # Clear the job dictionary for use by the next job
+                job_dict = {}
 
     return jobs_dict
 
@@ -3042,18 +3359,18 @@ def wait_for_node_state_any(
     state_set = frozenset(desired_node_states)
 
     def any_overlap(state):
-        return bool(state_set & set(state.split("+"))) != reverse
+        return bool(state_set & set(state)) != reverse
 
     # Wrapper for the repeat_until command to do all our state checking for us
     repeat_until(
-        lambda: get_node_parameter(nodename, "State"),
+        lambda: get_node_parameter(nodename, "state"),
         any_overlap,
         timeout=timeout,
         poll_interval=poll_interval,
         fatal=fatal,
     )
 
-    return any_overlap(get_node_parameter(nodename, "State"))
+    return any_overlap(get_node_parameter(nodename, "state"))
 
 
 def wait_for_node_state(
@@ -3088,23 +3405,22 @@ def wait_for_node_state(
     """
 
     # Figure out if we're waiting for the desired_node_state to be present or to be gone
-    if reverse:
-        condition = lambda state: desired_node_state not in state.split("+")
-    else:
-        condition = lambda state: desired_node_state in state.split("+")
+    def has_state(state):
+        return desired_node_state in state
+
+    def not_state(state):
+        return desired_node_state not in state
 
     # Wrapper for the repeat_until command to do all our state checking for us
     repeat_until(
-        lambda: get_node_parameter(nodename, "State"),
-        condition,
+        lambda: get_node_parameter(nodename, "state"),
+        not_state if reverse else has_state,
         timeout=timeout,
         poll_interval=poll_interval,
         fatal=fatal,
     )
 
-    return (
-        desired_node_state in get_node_parameter(nodename, "State").split("+")
-    ) != reverse
+    return (desired_node_state in get_node_parameter(nodename, "state")) != reverse
 
 
 def wait_for_step(job_id, step_id, **repeat_until_kwargs):
@@ -3491,7 +3807,7 @@ def create_node(node_dict):
     node_line = ""
     if "NodeName" in node_dict:
         node_line = f"NodeName={node_dict['NodeName']}"
-        node_dict.pop("NodeName")
+        node_range = node_dict.pop("NodeName")
     if "Port" in node_dict:
         node_line += f" Port={node_dict['Port']}"
         node_dict.pop("Port")
@@ -3510,6 +3826,15 @@ def create_node(node_dict):
         fatal=True,
         quiet=True,
     )
+
+    # Create the required node directories
+    for node_name in node_range_to_list(node_range):
+        spool_dir = properties["slurm-spool-dir"].replace("%n", node_name)
+        tmpfs_dir = properties["slurm-tmpfs"].replace("%n", node_name)
+        properties["nodes"].append(node_name)
+
+        run_command(f"sudo mkdir -p {spool_dir}", fatal=True, quiet=True)
+        run_command(f"sudo mkdir -p {tmpfs_dir}", fatal=True, quiet=True)
 
     # Restart slurm if it is already running
     if is_slurmctld_running(quiet=True):
@@ -3977,6 +4302,30 @@ def restore_accounting_database():
     run_command(f"rm -f {sql_dump_file}", fatal=True, quiet=False)
 
 
+def run_check_test(source_file, build_args=""):
+    """Compiles and runs a libcheck test
+    Args:
+        source_file (string): The name of the source file, relative to testsuite_check_dir.
+        build_args (string): Additional string to be appended to the build command.
+    """
+
+    check_test = (
+        f"{module_tmp_path}/{os.path.splitext(os.path.basename(source_file))[0]}.exe"
+    )
+
+    compile_against_libslurm(
+        f"{properties['testsuite_check_dir']}/{source_file}",
+        check_test,
+        full=True,
+        build_args=build_args + "-lcheck -lm -lsubunit",
+    )
+
+    result = run_command(check_test, quiet=True)
+    logging.info(f"{result['stdout']}")
+
+    assert not result["exit_code"]
+
+
 def compile_against_libslurm(
     source_file, dest_file, build_args="", full=False, shared=False
 ):
@@ -4318,6 +4667,10 @@ properties["slurm-prefix"] = "/usr/local"
 properties["testsuite_scripts_dir"] = (
     properties["testsuite_base_dir"] + "/python/scripts"
 )
+properties["testsuite_check_dir"] = properties["testsuite_base_dir"] + "/python/check"
+properties["influxdb_host"] = "localhost"
+properties["influxdb_port"] = 8086
+properties["influxdb_db"] = "slurm"
 
 # Override directory properties with values from testsuite.conf file
 testsuite_config = {}
@@ -4342,6 +4695,13 @@ if "slurminstalldir" in testsuite_config:
     properties["slurm-prefix"] = testsuite_config["slurminstalldir"]
 if "slurmconfigdir" in testsuite_config:
     properties["slurm-config-dir"] = testsuite_config["slurmconfigdir"]
+
+if "influxdb_host" in testsuite_config:
+    properties["influxdb_host"] = properties["influxdb_host"]
+if "influxdb_port" in testsuite_config:
+    properties["influxdb_host"] = properties["influxdb_port"]
+if "influxdb_db" in testsuite_config:
+    properties["influxdb_db"] = properties["influxdb_db"]
 
 # Set derived directory properties
 # The environment (e.g. PATH, SLURM_CONF) overrides the configuration.

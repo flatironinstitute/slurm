@@ -1791,6 +1791,9 @@ _print_config(void)
 	hours = (conf->up_time / 3600) % 24;
 	days  = (conf->up_time / 86400);
 	printf("UpTime=%u-%2.2u:%2.2u:%2.2u\n", days, hours, mins, secs);
+
+	xfree(gres_str);
+	xfree(autodetect_str);
 }
 
 static void _print_gres(void)
@@ -2023,11 +2026,9 @@ static void _on_listen_finish(conmgr_fd_t *con, void *arg)
 {
 	xassert(con == arg);
 
-#ifndef NDEBUG
 	slurm_mutex_lock(&listen_mutex);
-	xassert(!listener);
+	conmgr_fd_free_ref(&listener);
 	slurm_mutex_unlock(&listen_mutex);
-#endif
 
 	debug3("%s: [%s] closed RPC listener. Queuing up cleanup.",
 	       __func__, conmgr_fd_get_name(con));

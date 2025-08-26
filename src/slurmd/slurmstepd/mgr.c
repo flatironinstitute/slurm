@@ -1446,10 +1446,23 @@ x11_fail:
 
 	pid = fork();
 	if (pid == 0) {
+		sigset_t sigset;
 		setpgid(0, 0);
 		setsid();
 		set_oom_adj(0);	/* the tasks may be killed by OOM */
 		acct_gather_profile_g_child_forked();
+
+		/*
+		 * Mask all signals (except SIGTERM) to prevent the sleep
+		 * process from being inadvertently killed by sbatch or salloc
+		 * --signal options. If the sleep process dies then the extern
+		 * step terminates, which would break X11, pam_slurm_adopt or
+		 * stepmgr making the job to fail.
+		 */
+		sigfillset(&sigset);
+		sigdelset(&sigset, SIGTERM);
+		sigprocmask(SIG_BLOCK, &sigset, NULL);
+
 		/*
 		 * Need to exec() something for proctrack/linuxproc to
 		 * work, it will not keep a process named "slurmstepd"
@@ -1524,6 +1537,13 @@ x11_fail:
 		;	       /* Wait until above process exits from signal */
 	}
 
+	slurm_mutex_lock(&step->state_mutex);
+	while ((step->state < SLURMSTEPD_STEP_CANCELLED)) {
+		slurm_cond_wait(&step->state_cond, &step->state_mutex);
+	}
+	join_extern_threads();
+	slurm_mutex_unlock(&step->state_mutex);
+
 	/* Wait for all steps other than extern (this one) to complete */
 	if (!pause_for_job_completion(jobid, MAX(slurm_conf.kill_wait, 5),
 				      true)) {
@@ -1570,6 +1590,9 @@ x11_fail:
 		if (task_g_post_term(step, step->task[i]) == ENOMEM)
 			step->oom_error = true;
 
+	/* Lock to not collide with the _x11_signal_handler thread. */
+	auth_setuid_lock();
+
 	/*
 	 * This function below calls jobacct_gather_fini(). For the case of
 	 * jobacct_gather/cgroup, it ends up doing the cgroup hierarchy cleanup
@@ -1577,8 +1600,9 @@ x11_fail:
 	 * children processes from the step are gone.
 	 */
 	acct_gather_profile_fini();
-
 	task_g_post_step(step);
+
+	auth_setuid_unlock();
 
 fail1:
 	conmgr_add_work_fifo(_x11_signal_handler, step);

@@ -1007,6 +1007,7 @@ int main(int argc, char **argv)
 		_slurmctld_background(NULL);
 
 		controller_fini_scheduling(); /* Stop all scheduling */
+		rpc_queue_shutdown();
 		agent_fini();
 
 		/* termination of controller */
@@ -1156,7 +1157,6 @@ int main(int argc, char **argv)
 	conmgr_fini();
 
 	rate_limit_shutdown();
-	rpc_queue_shutdown();
 	log_fini();
 	sched_log_fini();
 
@@ -1712,7 +1712,10 @@ static void _open_ports(void)
 
 	for (uint64_t i = 0; i < listeners.count; i++) {
 		static const conmgr_con_flags_t flags =
-			(CON_FLAG_RPC_KEEP_BUFFER | CON_FLAG_QUIESCE);
+			(CON_FLAG_RPC_KEEP_BUFFER | CON_FLAG_QUIESCE |
+			 CON_FLAG_WATCH_WRITE_TIMEOUT |
+			 CON_FLAG_WATCH_READ_TIMEOUT |
+			 CON_FLAG_WATCH_CONNECT_TIMEOUT);
 		int rc, *index_ptr;
 
 		index_ptr = xmalloc(sizeof(*index_ptr));
@@ -1956,13 +1959,13 @@ static void _resize_qos(void)
 			if (part_ptr->allow_qos) {
 				info("got count for %s of %"BITSTR_FMT, part_ptr->name,
 				     bit_size(part_ptr->allow_qos_bitstr));
-				qos_list_build(part_ptr->allow_qos,
+				qos_list_build(part_ptr->allow_qos, false,
 					       &part_ptr->allow_qos_bitstr);
 				info("now count for %s of %"BITSTR_FMT, part_ptr->name,
 				     bit_size(part_ptr->allow_qos_bitstr));
 			}
 			if (part_ptr->deny_qos)
-				qos_list_build(part_ptr->deny_qos,
+				qos_list_build(part_ptr->deny_qos, false,
 					       &part_ptr->deny_qos_bitstr);
 		}
 		list_iterator_destroy(itr);
@@ -3760,11 +3763,11 @@ handle_parts:
 	itr = list_iterator_create(part_list);
 	while ((part_ptr = list_next(itr))) {
 		if (part_ptr->allow_qos)
-			qos_list_build(part_ptr->allow_qos,
+			qos_list_build(part_ptr->allow_qos, true,
 				       &part_ptr->allow_qos_bitstr);
 
 		if (part_ptr->deny_qos)
-			qos_list_build(part_ptr->deny_qos,
+			qos_list_build(part_ptr->deny_qos, true,
 				       &part_ptr->deny_qos_bitstr);
 
 		if (part_ptr->qos_char) {

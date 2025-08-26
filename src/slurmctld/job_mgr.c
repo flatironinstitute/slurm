@@ -3809,7 +3809,7 @@ static int _select_nodes_base(job_node_select_t *job_node_select)
 						   job_node_select->test_only,
 						   true,
 						   SLURMDB_JOB_FLAG_SUBMIT);
-	} else {
+	} else if (job_node_select->rc_part_limits != WAIT_PART_CONFIG) {
 		job_node_select->rc = select_nodes(job_node_select,
 						   true,
 						   true,
@@ -16252,6 +16252,7 @@ extern bool job_epilog_complete(uint32_t job_id, char *node_name,
 	 * really started. Very rare obviously.
 	 */
 	if ((IS_JOB_PENDING(job_ptr) && (!IS_JOB_COMPLETING(job_ptr))) ||
+	    ((!job_ptr->node_bitmap_cg) && (!IS_JOB_COMPLETING(job_ptr))) ||
 	    (job_ptr->node_bitmap == NULL)) {
 #ifndef HAVE_FRONT_END
 		uint32_t base_state = NODE_STATE_UNKNOWN;
