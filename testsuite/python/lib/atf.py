@@ -181,6 +181,10 @@ def run_command(
     if env_vars is not None:
         command = env_vars.strip() + " " + command
 
+    # If user is not specified but test-user is set, then set user to test-user
+    if not user and properties["test-user-set"]:
+        user = properties["test-user"]
+
     start_time = time.time()
     invocation_message = "Running command"
     if user is not None:
@@ -188,7 +192,7 @@ def run_command(
     invocation_message += f": {command}"
     logging.log(log_command_level, invocation_message)
     try:
-        if user is not None and user != properties["test-user"]:
+        if user is not None:
             if not properties["sudo-rights"]:
                 pytest.skip(
                     "This test requires the test user to have unprompted sudo rights",
@@ -552,7 +556,7 @@ def gcore(component, pid=None, sbin=True):
         pids = [pid]
 
     if not pids:
-        logging.warning("Process {prefix}/{component} not found")
+        logging.warning(f"Process {prefix}/{component} not found")
     logging.debug(f"Getting gcores for PIDs: {pids}")
     for pid in pids:
         run_command(
@@ -1033,6 +1037,20 @@ def require_slurm_running():
 
     if properties["auto-config"]:
         if not is_slurmctld_running(quiet=True):
+
+            # Check and report the mixed components
+            versions = dict()
+            versions["slurmdbd"] = get_version("sbin/slurmdbd")
+            versions["slurmctld"] = get_version("sbin/slurmctld")
+            versions["slurmd"] = get_version("sbin/slurmd")
+            versions["scontrol"] = get_version("bin/scontrol")
+            if len(set(versions.values())) == 1:
+                logging.info(
+                    f"Starting Slurm with all components in the same version: {versions['slurmctld']}"
+                )
+            else:
+                logging.info(f"Starting Slurm in a mixed version setup: {versions}")
+
             properties["slurm-started"] = True
             start_slurm(clean=True, quiet=True)
     else:
@@ -1045,8 +1063,48 @@ def require_slurm_running():
     nodes = get_nodes(quiet=True)
 
 
+def is_upgrade_setup(
+    old_slurm_prefix="/opt/slurm-old",
+    new_slurm_prefix="/opt/slurm-new",
+    old_build_prefix="",
+    new_build_prefix="",
+    old_source_prefix="",
+    new_source_prefix="",
+    force_old=False,
+):
+    """
+    Return True if we have two Slurms configured in the system.
+    """
+
+    if not os.path.exists(old_slurm_prefix):
+        logging.debug(f"Old prefix {old_slurm_prefix} not exists.")
+        return False
+
+    if not os.path.exists(new_slurm_prefix):
+        logging.debug(f"New prefix {new_slurm_prefix} not exists.")
+        return False
+
+    # Add the right properties
+    setup_upgrades(
+        old_slurm_prefix,
+        new_slurm_prefix,
+        old_build_prefix,
+        new_build_prefix,
+        old_source_prefix,
+        new_source_prefix,
+        force_old,
+    )
+    return True
+
+
 def require_upgrades(
-    old_slurm_prefix="/opt/slurm-old", new_slurm_prefix="/opt/slurm-new"
+    old_slurm_prefix="/opt/slurm-old",
+    new_slurm_prefix="/opt/slurm-new",
+    old_build_prefix="",
+    new_build_prefix="",
+    old_source_prefix="",
+    new_source_prefix="",
+    force_old=True,
 ):
     """Checks if has two different versions installed.
 
@@ -1055,15 +1113,16 @@ def require_upgrades(
     if not properties["auto-config"]:
         require_auto_config("to change/upgrade Slurm setup")
 
-    if not os.path.exists(old_slurm_prefix):
-        pytest.skip(
-            f"This test needs the upgrade setup. Old prefix {old_slurm_prefix} not exists."
-        )
-
-    if not os.path.exists(new_slurm_prefix):
-        pytest.skip(
-            f"This test needs the upgrade setup. New prefix {new_slurm_prefix} not exists."
-        )
+    if not is_upgrade_setup(
+        old_slurm_prefix,
+        new_slurm_prefix,
+        old_build_prefix,
+        new_build_prefix,
+        old_source_prefix,
+        new_source_prefix,
+        force_old,
+    ):
+        pytest.skip("This test needs an upgrade setup")
 
     # Double-check that old_version <= new_version
     old_version = get_version(slurm_prefix=old_slurm_prefix)
@@ -1074,37 +1133,71 @@ def require_upgrades(
         )
     logging.info(f"Required upgrade setup found: {old_version} and {new_version}")
 
+
+def setup_upgrades(
+    old_slurm_prefix="/opt/slurm-old",
+    new_slurm_prefix="/opt/slurm-new",
+    old_build_prefix="",
+    new_build_prefix="",
+    old_source_prefix="",
+    new_source_prefix="",
+    force_old=False,
+):
+    """
+    Adds the necessary atf.properties[] with the old/new paths.
+    If force_old is specified itt also update the links pointing to the old
+    paths, and they will be restored in the global teardown.
+    """
+    # TODO: We should use slurm-new(-build) instead of slurm-git(-build)
+    if old_build_prefix == "":
+        old_build_prefix = properties["slurm-build-dir"]
+    if new_build_prefix == "":
+        new_build_prefix = f"{properties['slurm-build-dir']}/../slurm-git-build"
+    if old_source_prefix == "":
+        old_source_prefix = properties["slurm-source-dir"]
+    if new_source_prefix == "":
+        new_source_prefix = f"{properties['slurm-source-dir']}/../slurm-git"
+
     properties["old-slurm-prefix"] = old_slurm_prefix
     properties["new-slurm-prefix"] = new_slurm_prefix
 
-    logging.debug(
-        "Setting bin/ and sbin/ pointing to old version and saving a backup..."
-    )
-    run_command(
-        f"sudo mv {properties['slurm-sbin-dir']} {module_tmp_path}/upgrade-sbin",
-        quiet=True,
-        fatal=True,
-    )
-    run_command(
-        f"sudo mv {properties['slurm-bin-dir']} {module_tmp_path}/upgrade-bin",
-        quiet=True,
-        fatal=True,
-    )
-    run_command(
-        f"sudo mkdir {properties['slurm-sbin-dir']} {properties['slurm-bin-dir']}",
-        quiet=True,
-        fatal=True,
-    )
-    run_command(
-        f"sudo ln -s {properties['old-slurm-prefix']}/sbin/* {properties['slurm-sbin-dir']}/",
-        quiet=True,
-        fatal=True,
-    )
-    run_command(
-        f"sudo ln -s {properties['old-slurm-prefix']}/bin/* {properties['slurm-bin-dir']}/",
-        quiet=True,
-        fatal=True,
-    )
+    properties["old-build-prefix"] = old_build_prefix
+    properties["new-build-prefix"] = new_build_prefix
+
+    properties["old-source-prefix"] = old_source_prefix
+    properties["new-source-prefix"] = new_source_prefix
+
+    properties["forced_upgrade_setup"] = force_old
+
+    if force_old:
+        logging.debug(
+            "Setting bin/ and sbin/ pointing to old version and saving a backup..."
+        )
+        run_command(
+            f"sudo mv {properties['slurm-sbin-dir']} {module_tmp_path}/upgrade-sbin",
+            quiet=True,
+            fatal=True,
+        )
+        run_command(
+            f"sudo mv {properties['slurm-bin-dir']} {module_tmp_path}/upgrade-bin",
+            quiet=True,
+            fatal=True,
+        )
+        run_command(
+            f"sudo mkdir {properties['slurm-sbin-dir']} {properties['slurm-bin-dir']}",
+            quiet=True,
+            fatal=True,
+        )
+        run_command(
+            f"sudo ln -s {properties['old-slurm-prefix']}/sbin/* {properties['slurm-sbin-dir']}/",
+            quiet=True,
+            fatal=True,
+        )
+        run_command(
+            f"sudo ln -s {properties['old-slurm-prefix']}/bin/* {properties['slurm-bin-dir']}/",
+            quiet=True,
+            fatal=True,
+        )
 
 
 def upgrade_component(component, new_version=True):
@@ -1165,40 +1258,56 @@ def get_version(component="sbin/slurmctld", slurm_prefix=""):
 
     Args:
         component (string): The bin/ or sbin/ component of Slurm to check.
+                            It also supports "config.h" to obtain the VERSION in the header.
         slurm_prefix (string): The path where the component is. By default the defined in testsuite.conf.
+                               If component is "config.h", then it's the build dir.
 
     Returns:
         A tuple representing the version. E.g. (25.05.0).
     """
-    if slurm_prefix == "":
-        slurm_prefix = f"{properties['slurm-sbin-dir']}/.."
+    if component == "config.h":
+        if slurm_prefix == "":
+            slurm_prefix = properties["slurm-build-dir"]
+        header = pathlib.Path(f"{slurm_prefix}/config.h")
+        if not header.exists():
+            pytest.fail("Unable to access to config.h to get Slurm version")
 
-    return tuple(
-        int(part) if part.isdigit() else 0
-        for part in run_command_output(
-            f"sudo {slurm_prefix}/{component} -V", quiet=True
+        version_str = re.search(
+            r'#define\s+VERSION\s+"([^"]+)"', header.read_text()
+        ).group(1)
+
+    else:
+        if slurm_prefix == "":
+            slurm_prefix = f"{properties['slurm-sbin-dir']}/.."
+
+        version_str = (
+            run_command_output(
+                f"{slurm_prefix}/{component} -V", quiet=True, user="root"
+            )
+            .strip()
+            .replace("slurm ", "")
         )
-        .replace("slurm ", "")
-        .split(".")
-    )
+
+    return tuple(int(part) if part.isdigit() else 0 for part in version_str.split("."))
 
 
-def require_version(version, component="sbin/slurmctld", slurm_prefix=""):
+def require_version(version, component="sbin/slurmctld", slurm_prefix="", reason=None):
     """Checks if the component is at least the required version, or skips.
 
     Args:
         version (tuple): The tuple representing the version.
         component (string): The bin/ or sbin/ component of Slurm to check.
         slurm_prefix (string): The path where the component is. By default the defined in testsuite.conf.
+        reason (string): The reason why the version of the component is required.
 
     Returns:
         A tuple representing the version. E.g. (25.05.0).
     """
     component_version = get_version(component, slurm_prefix)
     if component_version < version:
-        pytest.skip(
-            f"The version of {component} is {component_version}, required is {version}"
-        )
+        if not reason:
+            reason = f"The version of {component} is {component_version}, required is {version}"
+        pytest.skip(reason)
 
 
 def request_slurmrestd(request):
@@ -1489,7 +1598,6 @@ def get_config(live=True, source="slurm", quiet=False, delimiter="="):
                 )
                 if parameter_name.lower() in [
                     "downnodes",
-                    "frontendname",
                     "name",
                     "nodename",
                     "nodeset",
@@ -2378,7 +2486,7 @@ def cancel_all_jobs(
         False
     """
 
-    user_name = get_user_name()
+    user_name = properties["test-user"]
 
     run_command(f"scancel -u {user_name}", fatal=fatal, quiet=quiet)
 
@@ -3105,8 +3213,19 @@ def get_jobs(job_id=None, dbd=False, **run_command_kwargs):
         command = "scontrol -d -o show jobs"
         if job_id is not None:
             command += f" {job_id}"
-        output = run_command_output(command, fatal=True, **run_command_kwargs)
+        # TODO: Remove extra debug info for t22858 instead of fatal
+        result = run_command(command, fatal=False, **run_command_kwargs)
+        if result["exit_code"]:
+            logging.debug(
+                f"Fatal failure of {command}, probably due 'Unable to contact slurm controller' (t22858)"
+            )
+            logging.debug("Getting gcore from slurmctld before fatal.")
+            gcore("slurmctld")
+            pytest.fail(
+                f"Command {command} failed with rc={result['exit_code']}: {result['stderr']}"
+            )
 
+        output = result["stdout"]
         job_dict = {}
         for line in output.splitlines():
             if line == "":
@@ -4011,7 +4130,9 @@ def require_nodes(requested_node_count, requirements_list=[]):
                         augmentation_dict[parameter_name] = parameter_value
             elif parameter_name == "Features":
                 required_features = set(parameter_value.split(","))
-                node_features = set(lower_node_dict.get("features", "").split(","))
+                features = lower_node_dict.get("features", [])
+                features = features[0] if features else ""
+                node_features = set(features.split(","))
                 if not required_features.issubset(node_features):
                     if node_qualifies:
                         node_qualifies = False
@@ -4110,7 +4231,16 @@ def make_bash_script(script_name, script_contents):
     with open(script_name, "w") as f:
         f.write("#!/bin/bash\n")
         f.write(script_contents)
-    os.chmod(script_name, 0o0700)
+
+    run_command(f"chmod 777 {script_name}", user="root", fatal=True, quiet=True)
+
+    if properties["test-user-set"]:
+        run_command(
+            f"chown {properties['test-user']} {script_name}",
+            user="root",
+            fatal=True,
+            quiet=True,
+        )
 
 
 def wait_for_file(file_name, **repeat_until_kwargs):
@@ -4309,25 +4439,49 @@ def run_check_test(source_file, build_args=""):
         build_args (string): Additional string to be appended to the build command.
     """
 
+    import xmltodict
+
     check_test = (
-        f"{module_tmp_path}/{os.path.splitext(os.path.basename(source_file))[0]}.exe"
+        f"{module_tmp_path}/{os.path.splitext(os.path.basename(source_file))[0]}"
     )
+    xml_test = check_test + ".xml"
 
     compile_against_libslurm(
         f"{properties['testsuite_check_dir']}/{source_file}",
         check_test,
         full=True,
         build_args=build_args + "-lcheck -lm -lsubunit",
+        fatal=True,
+        quiet=True,
     )
 
-    result = run_command(check_test, quiet=True)
-    logging.info(f"{result['stdout']}")
+    # Run the libcheck test setting an xml output
+    result = run_command(
+        check_test, quiet=True, env_vars=f"CK_XML_LOG_FILE_NAME={xml_test}"
+    )
 
-    assert not result["exit_code"]
+    # Parse the xml output
+    if not os.path.exists(xml_test):
+        pytest.fail(f"Test results not found: {xml_test}")
+
+    with open(xml_test) as f:
+        xml_data = xmltodict.parse(f.read())
+
+    logging.info(f"{result['stdout']}")
+    if result["exit_code"]:
+        logging.error(f"\n{result['stderr']}")
+
+    return xml_data["testsuites"]["suite"]
 
 
 def compile_against_libslurm(
-    source_file, dest_file, build_args="", full=False, shared=False
+    source_file,
+    dest_file,
+    build_args="",
+    full=False,
+    shared=False,
+    new_prefixes=False,
+    **run_command_kwargs,
 ):
     """Compiles a test program against either libslurm.so or libslurmfull.so.
 
@@ -4341,6 +4495,8 @@ def compile_against_libslurm(
         full (boolean): Use libslurmfull.so instead of libslurm.so.
         shared (boolean): Produces a shared library (adds the -shared compiler option
             and adds a .so suffix to the output file name).
+        **run_command_kwargs: Auxiliary arguments to be passed to the
+            run_command function (e.g., quiet, fatal, timeout, etc.).
 
     Returns:
         None
@@ -4349,29 +4505,35 @@ def compile_against_libslurm(
         >>> compile_against_libslurm("my_test.c", "my_test", build_args="-Wall -Werror")
     """
 
+    slurm_prefix = properties["slurm-prefix"]
+    slurm_source = properties["slurm-source-dir"]
+    slurm_build = properties["slurm-build-dir"]
+    if new_prefixes:
+        slurm_prefix = properties["new-slurm-prefix"]
+        slurm_source = properties["new-source-prefix"]
+        slurm_build = properties["new-build-prefix"]
+
     if full:
         slurm_library = "slurmfull"
     else:
         slurm_library = "slurm"
-    if os.path.isfile(
-        f"{properties['slurm-prefix']}/lib64/slurm/lib{slurm_library}.so"
-    ):
+    if os.path.isfile(f"{slurm_prefix}/lib64/slurm/lib{slurm_library}.so"):
         lib_dir = "lib64"
     else:
         lib_dir = "lib"
     if full:
-        lib_path = f"{properties['slurm-prefix']}/{lib_dir}/slurm"
+        lib_path = f"{slurm_prefix}/{lib_dir}/slurm"
     else:
-        lib_path = f"{properties['slurm-prefix']}/{lib_dir}"
+        lib_path = f"{slurm_prefix}/{lib_dir}"
 
     command = f"gcc {source_file} -g -pthread"
     if shared:
         command += " -fPIC -shared"
     command += f" -o {dest_file}"
-    command += f" -I{properties['slurm-source-dir']} -I{properties['slurm-build-dir']} -I{properties['slurm-prefix']}/include -Wl,-rpath={lib_path} -L{lib_path} -l{slurm_library} -lresolv"
+    command += f" -I{slurm_source} -I{slurm_build} -I{slurm_prefix}/include -Wl,-rpath={lib_path} -L{lib_path} -l{slurm_library} -lresolv"
     if build_args != "":
         command += f" {build_args}"
-    run_command(command, fatal=True)
+    run_command(command, **run_command_kwargs)
 
 
 def get_partitions(**run_command_kwargs):
@@ -4697,11 +4859,11 @@ if "slurmconfigdir" in testsuite_config:
     properties["slurm-config-dir"] = testsuite_config["slurmconfigdir"]
 
 if "influxdb_host" in testsuite_config:
-    properties["influxdb_host"] = properties["influxdb_host"]
+    properties["influxdb_host"] = testsuite_config["influxdb_host"]
 if "influxdb_port" in testsuite_config:
-    properties["influxdb_host"] = properties["influxdb_port"]
+    properties["influxdb_port"] = testsuite_config["influxdb_port"]
 if "influxdb_db" in testsuite_config:
-    properties["influxdb_db"] = properties["influxdb_db"]
+    properties["influxdb_db"] = testsuite_config["influxdb_db"]
 
 # Set derived directory properties
 # The environment (e.g. PATH, SLURM_CONF) overrides the configuration.
@@ -4737,7 +4899,7 @@ if os.access(slurm_config_file, os.R_OK):
             if match := re.search(rf"^\s*(?i:SlurmUser)\s*=\s*(.*)$", line):
                 properties["slurm-user"] = match.group(1)
 else:
-    # slurm.conf is not readable as test-user. We will try reading it as root
+    # slurm.conf is not readable, we will try reading it as root
     results = run_command(
         f"grep -i SlurmUser {slurm_config_file}", user="root", quiet=True
     )
@@ -4748,7 +4910,16 @@ else:
             properties["slurm-user"] = match.group(1)
 
 properties["submitted-jobs"] = []
-properties["test-user"] = pwd.getpwuid(os.getuid()).pw_name
+if "slurmtestuser" in testsuite_config:
+    properties["test-user"] = testsuite_config["slurmtestuser"]
+    properties["test-user-set"] = True
+else:
+    properties["test-user"] = pwd.getpwuid(os.getuid()).pw_name
+    properties["test-user-set"] = False
+
+properties["test-user-uid"] = pwd.getpwnam(properties["test-user"]).pw_uid
+properties["test-user-gid"] = pwd.getpwnam(properties["test-user"]).pw_gid
+
 properties["auto-config"] = False
 properties["allow-slurmdbd-modify"] = False
 properties["slurmrestd-started"] = False
